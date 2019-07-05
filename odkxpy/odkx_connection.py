@@ -37,10 +37,13 @@ class OdkxConnection(object):
         response = self.session.put(self.server+self.appID+'/'+url, headers=headers, data=payload)
         return self.treatResponse(response)
 
-    def GET(self, url, params=None):
+    def GET(self, url, params=None, stream=False, timeout=None):
         """fetch tables through HTTP GET
         """
-        response = self.session.get(self.server+self.appID+'/'+url, params=params)
+        response = self.session.get(self.server+self.appID+'/'+url, params=params, stream=stream, timeout=timeout)
+        if stream:
+            ## todo nicer way
+            return response
         return self.treatResponse(response)
 
     def POST(self, url, data, headers=None):

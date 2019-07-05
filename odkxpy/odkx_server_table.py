@@ -1,6 +1,8 @@
 import json
 from collections import namedtuple
 from .odkx_connection import OdkxConnection
+import datetime
+import logging
 
 OdkxServerTableInfo = namedtuple('OdkxServerTableInfo', [
         'tableId', 'dataETag', 'schemaETag', 'selfUri', 'definitionUri', 'dataUri', 'instanceFilesUri', 'diffUri', 'aclUri', 'tableLevelManifestETag'
@@ -8,6 +10,15 @@ OdkxServerTableInfo = namedtuple('OdkxServerTableInfo', [
 
 OdkxServerTableInfo.__new__.__defaults__ = (None, ) * len(OdkxServerTableInfo._fields)
 
+
+OdkxServerTableRowset = namedtuple('OdkxServerTableRowset',
+                                   ['rows', 'dataETag', 'tableUri', 'webSafeRefetchCursor', 'webSafeBackwardCursor', 'webSafeResumeCursor', 'hasMoreResults', 'hasPriorResults']
+                                   )
+
+OdkxServerTableRow = namedtuple('OdkxServerTableRow',
+                                ['rowETag', 'dataETagAtModification', 'deleted', 'createUser', 'lastUpdateUser', 'formId', 'locale', 'savepointType', 'savepointTimestamp', 'savepointCreator', 'orderedColumns', 'selfUri', 'id', 'filterScope'])
+
+OdkxServerTableColumn = namedtuple('OdkxServerTableColumn', ['column', 'value'])
 
 class OdkxServerColumnDefinition(object):
     def __init__(self, elementKey=None, elementName = None, elementType= None, childElements=None, parentElement=None):
@@ -127,43 +138,62 @@ class OdkxServerTable(object):
     def putJsonTableProperties(self, json):
         return self.connection.PUT('tables/' + self.tableId + "/properties/2", json)
 
-#### I GOT HERE REFACTORING
 
     def getTableAcl(self):
         return self.connection.GET('tables/' + self.tableId + '/acl')
 
-    def getAllDataChanges(self, dataETag=None, cursor=None, fetchLimit=None):
+    def _parse_rowset(self, r):
+        r['rows'] = [self._parse_row(x) for x in r['rows']]
+        d = OdkxServerTableRowset(**r)
+        return d
+
+    def _parse_row(self, r):
+        def rw(x):
+            x['orderedColumns'] = [OdkxServerTableColumn(**z) for z in x['orderedColumns']]
+            return x
+        return OdkxServerTableRow(**rw(r))
+
+    def getDiff(self, dataETag=None, cursor=None, fetchLimit=None):
         params = {'data_etag': dataETag, 'cursor': cursor, 'fetchLimit': fetchLimit}
-        return self.connection.GET(self.getTableRoot() + "/diff", params)
-
-    def getChangesets(self, dataETag=None, sequence_value=None):
-        # Not working - Problem API ?
-        params = {'data_etag': dataETag, 'sequence_value': sequence_value}
-        return self.req_odkx_server(self.getTableRoot() + "/diff/changeSets", params)
-
-    def getChangesetRows(self, dataETag, cursor=None, fetchLimit=None, active_only=None):
-        params = {'active_only': active_only, 'cursor': cursor, 'fetchLimit': fetchLimit}
-        return self.req_odkx_server(self.getTableRoot() + "/diff/changeSets/" + dataETag, params)
+        r = self.connection.GET(self.getTableRoot() + "/diff", params)
+        return self._parse_rowset(r)
 
     def getAllDataRows(self, cursor=None, fetchLimit=None):
         params = {'cursor': cursor, 'fetchLimit': fetchLimit}
-        return self.req_odkx_server(self.getTableRoot() + "/rows", params)
+        return self._parse_rowset(self.connection.GET(self.getTableRoot() + "/rows", params))
 
-    def getDataRow(self, rowId):
-        return self.req_odkx_server(self.getTableRoot() + "/rows/" + rowId)
+
+    def getChangesets(self, dataETag=None, sequence_value=None):
+        # Not working - Problem API ?
+        ## todo refactor after ludovic explains me
+        params = {'data_etag': dataETag, 'sequence_value': sequence_value}
+        return self.connection.GET(self.getTableRoot() + "/diff/changeSets", params)
+
+    def getChangesetRows(self, dataETag, cursor=None, fetchLimit=None, active_only=None):
+        ## todo refactor after ludovic explains me
+        params = {'active_only': active_only, 'cursor': cursor, 'fetchLimit': fetchLimit}
+        return self.connection.GET(self.getTableRoot() + "/diff/changeSets/" + dataETag, params)
+
+
+    def getDataRow(self, rowId, raw=False):
+        r = self.connection.GET(self.getTableRoot() + "/rows/" + rowId)
+        if raw:
+            return r
+        return self._parse_row(r)
 
     def getAttachmentsManifest(self, rowId):
-        response = self.session.get(
-            self.server + self.appID + '/' + self.getTableRoot() + "/attachments/" + rowId + "/manifest")
-        return self.treatResponse(response)
+        return [OdkxServerFile(**d) for d in self.connection.GET(self.getTableRoot() + "/attachments/" + rowId + "/manifest")]
+
+    #### I GOT HERE REFACTORING
 
     def getAttachment(self, rowId, name, stream, timeout):
-        return self.session.get(
-            self.server + self.appID + '/' + self.getTableRoot() + "/attachments/" + rowId + "/file/" + name,
+        return self.connection.session.get(
+            self.connection.server + self.connection.appID + '/' + self.getTableRoot() + "/attachments/" + rowId + "/file/" + name,
             stream=stream, timeout=timeout)
 
     def getAttachments(self, rowId, data):
         # Not working - TODO
+        ## @ludovic i think this is probably setAttachments ? @TODO
         headers = {"Content-Type": "application/json"}
         payload = json.dumps(data)
         return self.session.post(
@@ -172,7 +202,7 @@ class OdkxServerTable(object):
 
     def alterDataRows(self, json):
         """Insert, Update or Delete"""
-        return self.put_odkx_server(self.getTableRoot() + "/rows", json)
+        return self.connection.PUT(self.getTableRoot() + "/rows", json)
 
     # Manipulate individual records
 
@@ -197,7 +227,7 @@ class OdkxServerTable(object):
         return output
 
     def alterRecord(self, dataETag, rowId, **kwargs):
-        onerow = self.getDataRow(rowId)
+        onerow = self.getDataRow(rowId, raw=True)
         del onerow['selfUri']
         onerow['savepointTimestamp'] = str(datetime.datetime.now())
         onerow['savepointCreator'] = self.user
@@ -210,7 +240,7 @@ class OdkxServerTable(object):
         return output
 
     def deleteRecord(self, dataETag, rowId):
-        onerow = self.getDataRow(rowId)
+        onerow = self.getDataRow(rowId, raw=True)
         del onerow['selfUri']
         onerow['deleted'] = True
         json = {'rows': [onerow], 'dataETag': dataETag}
