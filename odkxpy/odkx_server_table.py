@@ -3,6 +3,7 @@ from collections import namedtuple
 from .odkx_connection import OdkxConnection
 import datetime
 import logging
+from typing import List
 
 OdkxServerTableInfo = namedtuple('OdkxServerTableInfo', [
         'tableId', 'dataETag', 'schemaETag', 'selfUri', 'definitionUri', 'dataUri', 'instanceFilesUri', 'diffUri', 'aclUri', 'tableLevelManifestETag'
@@ -29,7 +30,7 @@ class OdkxServerColumnDefinition(object):
         self.parentElement = parentElement
         self.properties = {}
 
-    def isMaterialized(self):
+    def isMaterialized(self) -> bool:
         """
         :return: true if this column will be represented physically in a table
         """
@@ -68,10 +69,10 @@ class OdkxServerTable(object):
         self.tableId = tableId
         self.schemaETag = schemaETag
 
-    def getTableInfo(self):
+    def getTableInfo(self) -> OdkxServerTableInfo:
         return OdkxServerTableInfo(**self.connection.GET('tables/' + self.tableId))
 
-    def getFileManifest(self):
+    def getFileManifest(self) -> List[OdkxServerFile]:
         return [OdkxServerFile(**x) for x in self.connection.GET("manifest/2/" + self.tableId)['files']]
 
     def getFile(self, path):
@@ -96,7 +97,7 @@ class OdkxServerTable(object):
     def getTableRoot(self):
         return "tables/" + self.tableId + "/ref/" + self.schemaETag
 
-    def getTableDefinition(self):
+    def getTableDefinition(self) -> List[OdkxServerColumnDefinition]:
         t_d = self.connection.GET(self.getTableRoot())
         col_props = [ x for x in self.connection.GET("tables/" + self.tableId + "/properties/2") if x['partition'] == 'Column']
 
@@ -182,7 +183,7 @@ class OdkxServerTable(object):
         return self._parse_row(r)
 
     def getAttachmentsManifest(self, rowId):
-        return [OdkxServerFile(**d) for d in self.connection.GET(self.getTableRoot() + "/attachments/" + rowId + "/manifest")]
+        return [OdkxServerFile(**d) for d in self.connection.GET(self.getTableRoot() + "/attachments/" + rowId + "/manifest")['files']]
 
     #### I GOT HERE REFACTORING
 
@@ -340,7 +341,7 @@ class OdkxServerTable(object):
     # Sync process components
 
     def compareDataETag(self, dataETagLocal):
-        dataETag = self.getTable()['dataETag']
+        dataETag = self.getTableInfo().dataETag
         if dataETag == dataETagLocal:
             logging.info("same dataETag: " + dataETag)
             return True
