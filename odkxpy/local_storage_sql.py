@@ -14,6 +14,7 @@ class SqlLocalStorage(object):
     def initializeLocalStorage(self, server_table: OdkxServerTable):
         self._createLocalTable(server_table, False)
         self._createLocalTable(server_table, True)
+        self._createLocalTable(server_table, True, server_table.tableId + '_staging')
         self._createStatusTable()
 
 
@@ -37,8 +38,10 @@ class SqlLocalStorage(object):
         meta.create_all()
 
 
-    def _createLocalTable(self, server_table: OdkxServerTable, log_table: bool = False):
+    def _createLocalTable(self, server_table: OdkxServerTable, log_table: bool = False, table_name_instead = None):
         s_tn = server_table.tableId + ('_log' if log_table else '')
+        if table_name_instead:
+            s_tn = table_name_instead
         full_tn = self.schema + '.' + s_tn
         meta = sqlalchemy.MetaData()
         meta.bind = self.engine
@@ -72,7 +75,7 @@ class SqlLocalStorage(object):
                 t.append_column(sqlalchemy.Column(cname, dt))
 
 
-        for cn in ['createUser', 'lastUpdateUser', 'dataETagAtModification', 'rowETag', 'savepointCreator', 'formId']:
+        for cn in ['createUser', 'lastUpdateUser', 'dataETagAtModification', 'savepointCreator', 'formId']:
             if not cn in t.c:
                 t.append_column(sqlalchemy.Column(cn, sqlalchemy.String(50)))
 
@@ -82,10 +85,6 @@ class SqlLocalStorage(object):
             if not 'state' in t.c:
                 t.append_column(sqlalchemy.Column('state', sqlalchemy.String(50)))
 
-
-        for cn in ['default', 'lastUpdateUser', 'dataETagAtModification', 'savepointCreator', 'formId']:
-            if not cn in t.c:
-                t.append_column(sqlalchemy.Column(cn, sqlalchemy.String(50)))
 
         if not 'rowETag' in t.c:
             t.append_column(sqlalchemy.Column('rowETag', sqlalchemy.String(50), primary_key=log_table))

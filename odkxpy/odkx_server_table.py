@@ -154,18 +154,17 @@ class OdkxServerTable(object):
             return x
         return OdkxServerTableRow(**rw(r))
 
-    def _generator_rowset(self, l) -> Generator[OdkxServerTableRowset]:
+    def _generator_rowset(self, l) -> Generator[OdkxServerTableRowset,None,None]:
         hasmore = True
         cursor = None
         while hasmore:
-            data = l(cursor=cursor)
-            rs = self._parse_rowset(data)
+            rs = l(cursor)
             hasmore = rs.hasMoreResults
             cursor = rs.webSafeResumeCursor
             yield rs
 
 
-    def getDiffGenerator(self, dataETag=None, fetchLimit=None) -> Generator[OdkxServerTableRowset]:
+    def getDiffGenerator(self, dataETag=None, fetchLimit=None) -> Generator[OdkxServerTableRowset,None,None]:
         return self._generator_rowset(
             lambda z_cursor: self.getDiff(dataETag=dataETag, cursor=z_cursor, fetchLimit=fetchLimit))
 
@@ -174,7 +173,7 @@ class OdkxServerTable(object):
         r = self.connection.GET(self.getTableRoot() + "/diff", params)
         return self._parse_rowset(r)
 
-    def getAllDataRowsGenerator(self, fetchLimit=None) -> Generator[OdkxServerTableRowset]:
+    def getAllDataRowsGenerator(self, fetchLimit=None) -> Generator[OdkxServerTableRowset,None,None]:
         return self._generator_rowset(
             lambda z_cursor: self.getAllDataRows(cursor=z_cursor, fetchLimit=fetchLimit))
 
