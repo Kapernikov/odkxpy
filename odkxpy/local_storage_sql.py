@@ -1,24 +1,56 @@
 import sqlalchemy
 from .odkx_server_table import OdkxServerTable
+from .odkx_local_table import OdkxLocalTable
 
 class SqlLocalStorage(object):
     def __init__(self, engine: sqlalchemy.engine.Engine, schema: str):
         self.engine = engine
         self.schema = schema
 
-    def createLocalTable(self, server_table: OdkxServerTable):
-        full_tn = self.schema + '.' + server_table.tableId
+    def getLocalTable(self, server_table: OdkxServerTable) -> OdkxLocalTable:
+        self.initializeLocalStorage(server_table)
+        return OdkxLocalTable(server_table.tableId, self.engine, self.schema)
+
+    def initializeLocalStorage(self, server_table: OdkxServerTable):
+        self._createLocalTable(server_table, False)
+        self._createLocalTable(server_table, True)
+        self._createStatusTable()
+
+
+    def _createStatusTable(self):
+        s_tn = 'status_table'
+        full_tn = self.schema + '.' + s_tn
         meta = sqlalchemy.MetaData()
         meta.bind = self.engine
         t = None
         try:
-            meta.reflect(only=[server_table.tableId], schema=self.schema, views=True)
+            meta.reflect(only=[s_tn], schema=self.schema, views=True)
             if not full_tn in meta:
-                t = sqlalchemy.Table(server_table.tableId, meta, schema=self.schema)
+                t = sqlalchemy.Table(s_tn, meta, schema=self.schema)
             else:
-                t = meta[full_tn]  # sqlalchemy.Table
+                t = meta.tables.get(full_tn)  # sqlalchemy.Table
         except sqlalchemy.exc.InvalidRequestError:
-            t = sqlalchemy.Table(server_table.tableId, meta, schema=self.schema)
+            t = sqlalchemy.Table(s_tn, meta, schema=self.schema)
+        t.append_column(sqlalchemy.Column('table_name', sqlalchemy.String(80)))
+        t.append_column(sqlalchemy.Column('dataETag', sqlalchemy.String(50)))
+        t.append_column(sqlalchemy.Column('sync_date', sqlalchemy.DateTime))
+        meta.create_all()
+
+
+    def _createLocalTable(self, server_table: OdkxServerTable, log_table: bool = False):
+        s_tn = server_table.tableId + ('_log' if log_table else '')
+        full_tn = self.schema + '.' + s_tn
+        meta = sqlalchemy.MetaData()
+        meta.bind = self.engine
+        t = None
+        try:
+            meta.reflect(only=[s_tn], schema=self.schema, views=True)
+            if not full_tn in meta:
+                t = sqlalchemy.Table(s_tn, meta, schema=self.schema)
+            else:
+                t = meta.tables.get(full_tn)  # sqlalchemy.Table
+        except sqlalchemy.exc.InvalidRequestError:
+            t = sqlalchemy.Table(s_tn, meta, schema=self.schema)
         for col in server_table.getTableDefinition():
             if not col.isMaterialized():
                 continue
@@ -40,13 +72,23 @@ class SqlLocalStorage(object):
                 t.append_column(sqlalchemy.Column(cname, dt))
 
 
-        for cn in ['createUser', 'lastUpdateUser', 'dataETagAtModification', 'rowETag', 'savepointCreator', 'formId', 'state', 'hash']:
+        for cn in ['createUser', 'lastUpdateUser', 'dataETagAtModification', 'rowETag', 'savepointCreator', 'formId']:
             if not cn in t.c:
                 t.append_column(sqlalchemy.Column(cn, sqlalchemy.String(50)))
 
-        for cn in ['default', 'lastUpdateUser', 'dataETagAtModification', 'rowETag', 'savepointCreator', 'formId']:
+        if not log_table:
+            if not 'hash' in t.c:
+                t.append_column(sqlalchemy.Column('hash', sqlalchemy.String(50)))
+            if not 'state' in t.c:
+                t.append_column(sqlalchemy.Column('state', sqlalchemy.String(50)))
+
+
+        for cn in ['default', 'lastUpdateUser', 'dataETagAtModification', 'savepointCreator', 'formId']:
             if not cn in t.c:
                 t.append_column(sqlalchemy.Column(cn, sqlalchemy.String(50)))
+
+        if not 'rowETag' in t.c:
+            t.append_column(sqlalchemy.Column('rowETag', sqlalchemy.String(50), primary_key=log_table))
 
         for cn in ['locale', 'savepointType']:
             if not cn in t.c:
@@ -61,9 +103,7 @@ class SqlLocalStorage(object):
         if not 'deleted' in t.c:
             t.append_column(sqlalchemy.Column('deleted', sqlalchemy.Boolean))
         if not 'id' in t.c:
-            t.append_column(sqlalchemy.Column('id', sqlalchemy.String(50), primary_key=True, nullable=False))
-
-
+            t.append_column(sqlalchemy.Column('id', sqlalchemy.String(50), primary_key=not log_table, nullable=False))
 
         meta.create_all(self.engine)
 

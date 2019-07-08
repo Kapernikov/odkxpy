@@ -3,7 +3,7 @@ from collections import namedtuple
 from .odkx_connection import OdkxConnection
 import datetime
 import logging
-from typing import List
+from typing import List, Generator
 
 OdkxServerTableInfo = namedtuple('OdkxServerTableInfo', [
         'tableId', 'dataETag', 'schemaETag', 'selfUri', 'definitionUri', 'dataUri', 'instanceFilesUri', 'diffUri', 'aclUri', 'tableLevelManifestETag'
@@ -154,14 +154,34 @@ class OdkxServerTable(object):
             return x
         return OdkxServerTableRow(**rw(r))
 
-    def getDiff(self, dataETag=None, cursor=None, fetchLimit=None):
+    def _generator_rowset(self, l) -> Generator[OdkxServerTableRowset]:
+        hasmore = True
+        cursor = None
+        while hasmore:
+            data = l(cursor=cursor)
+            rs = self._parse_rowset(data)
+            hasmore = rs.hasMoreResults
+            cursor = rs.webSafeResumeCursor
+            yield rs
+
+
+    def getDiffGenerator(self, dataETag=None, fetchLimit=None) -> Generator[OdkxServerTableRowset]:
+        return self._generator_rowset(
+            lambda z_cursor: self.getDiff(dataETag=dataETag, cursor=z_cursor, fetchLimit=fetchLimit))
+
+    def getDiff(self, dataETag=None, cursor=None, fetchLimit=None) -> OdkxServerTableRowset:
         params = {'data_etag': dataETag, 'cursor': cursor, 'fetchLimit': fetchLimit}
         r = self.connection.GET(self.getTableRoot() + "/diff", params)
         return self._parse_rowset(r)
 
-    def getAllDataRows(self, cursor=None, fetchLimit=None):
+    def getAllDataRowsGenerator(self, fetchLimit=None) -> Generator[OdkxServerTableRowset]:
+        return self._generator_rowset(
+            lambda z_cursor: self.getAllDataRows(cursor=z_cursor, fetchLimit=fetchLimit))
+
+    def getAllDataRows(self, cursor=None, fetchLimit=None) -> OdkxServerTableRowset:
         params = {'cursor': cursor, 'fetchLimit': fetchLimit}
         return self._parse_rowset(self.connection.GET(self.getTableRoot() + "/rows", params))
+
 
 
     def getChangesets(self, dataETag=None, sequence_value=None):
