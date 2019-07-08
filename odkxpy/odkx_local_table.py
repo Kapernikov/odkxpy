@@ -30,7 +30,7 @@ class FilesystemAttachmentStore(object):
 
     def storeFile(self, id, filename, response: requests.Response):
         target = self.getFileName(id, filename)
-        os.makedirs(os.path.join(self.path, id))
+        os.makedirs(os.path.join(self.path, id),exist_ok=True)
         with open(target + '-tmp', 'wb') as out_file:
             for chunk in response.iter_content(1024):
                 out_file.write(chunk)
@@ -49,7 +49,7 @@ class OdkxLocalTable(object):
 
     def getLocalDataETag(self):
         with self.engine.connect() as c:
-            rs = c.execute(text(f"""select * from {self.schema}.status_table where "table_name" = :tableid order by sync_date desc limit 1
+            rs = c.execute(text(f"""select "dataETag" from {self.schema}.status_table where "table_name" = :tableid order by sync_date desc limit 1
                 """), tableid=self.tableId)
             for row in rs:
                 return row[0]
@@ -72,7 +72,7 @@ class OdkxLocalTable(object):
 
 
     def updateLocalStatusDb(self, dataETag):
-        sql = f"""INSERT INTO {self.schema}.status_table ("table_name", "data_ETag", "sync_date")
+        sql = f"""INSERT INTO {self.schema}.status_table ("table_name", "dataETag", "sync_date")
                  VALUES ('{self.tableId}', '{dataETag}', '{str(datetime.datetime.now())}')"""
         logging.info("SQL request:\n"+sql)
         with self.engine.connect() as con:
@@ -127,7 +127,8 @@ class OdkxLocalTable(object):
         for id in ids:
             self.downloadAttachments(remoteTable, id)
             with self.engine.connect() as c:
-                c.execute(sqlalchemy.Text("update {schema}.{table} set state='synced' where id=:rowid"), rowid=id)
+                c.execute(sqlalchemy.sql.text("update {schema}.{table} set state='synced' where id=:rowid".format(
+                    schema=self.schema, table=self.tableId)), rowid=id)
 
     def _staging_to_log(self):
         st = self._getStagingTable()
@@ -151,7 +152,7 @@ class OdkxLocalTable(object):
 
         # sync up data
         with self.engine.begin() as trans:
-            trans.execute("delete from {schema}.{table} where id in (select id from {schema}.{stagingtable}".format(
+            trans.execute("delete from {schema}.{table} where id in (select id from {schema}.{stagingtable})".format(
                 schema=self.schema, table=self.tableId, stagingtable=self.tableId + '_staging'
             ))
             fields = ','.join(['"{colname}"'.format(colname=colname) for colname in colnames])
