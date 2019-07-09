@@ -1,5 +1,5 @@
 import sqlalchemy
-from .odkx_server_table import OdkxServerTable, OdkxServerTableRow, OdkxServerTableColumn
+from .odkx_server_table import OdkxServerTable, OdkxServerTableRow, OdkxServerTableColumn, OdkxServerColumnDefinition
 from sqlalchemy import MetaData, text
 import os
 from typing import Optional, List
@@ -98,6 +98,7 @@ class OdkxLocalTable(object):
             dct[col.column] =col.value
         return dct
 
+
     def stageAllDataChanges(self, remoteTable: OdkxServerTable) -> Optional[str]:
         st = self._getStagingTable()
         last_rs = None
@@ -173,8 +174,85 @@ class OdkxLocalTable(object):
             raise Exception("please pull first")
 
 
-    def sync(self, remoteTable: OdkxServerTable):
+    def _qryState(self, local_changes_prefix: str, tableDefinition: List[OdkxServerColumnDefinition], state: List[str]):
+        locChanges = self._getTableMeta(self.tableId + '_' + local_changes_prefix)
+        locTable = self._getTableMeta(self.tableId)
+        locChangesCols = [x.name for x in locChanges.columns]
+        locTableCols = [x.name for x in locTable.columns]
+        colsTakeLocally = [x.elementKey for x in tableDefinition if x.isMaterialized()] + ['id', 'rowETag']
+        colsTakeLocally = [x for x in locChangesCols if x in colsTakeLocally]
+        col_list = ['l."{x}"'.format(x=x) if x in colsTakeLocally else 'r."{x}"'.format(x=x) for x in locTableCols]
+        qry = "SELECT {col_list} FROM {schema}.{loctable} l LEFT OUTER JOIN {schema}.{table} r ON l.id = r.id WHERE l.state in ({state})".format(
+            schema=self.schema,
+            loctable=self.tableId + '_' + local_changes_prefix,
+            table=self.tableId,
+            col_list=','.join(col_list),
+            state=','.join(["'" + x + "'" for x in state])
+        )
+        return qry
+
+    def row2rec(self,row: dict, definition: List[OdkxServerColumnDefinition], default_user: str):
+        datacols = [x.elementKey for x in definition if x.isMaterialized()]
+        ## TODO refactor
+        for c in datacols:
+            if not c in row.keys():
+                raise Exception("schema's have diverged: on ODKX server i got column {c} but i couldn't find it locally. please fix.".format(c=c))
+        tupColAccess = ('defaultAccess',  'groupModify', 'groupPrivileged', 'groupReadOnly', 'rowOwner')
+        tupColnames = tuple(datacols)
+        filterScope = {}
+        orderedColumns = []
+        for c in tupColAccess:
+            if (c == 'defaultAccess' and row[c] is None):
+                filterScope[c] = 'FULL'
+            else:
+                filterScope[c] = row[c]
+        for c in tupColnames:
+            orderedColumns.append({'column':c,'value':row[c]})
+
+        result = {}
+        result['filterScope'] = filterScope
+        result['orderedColumns'] = orderedColumns
+        fix_row_fields = ['createUser', 'lastUpdateUser', 'dataETagAtModification', 'rowETag', 'savepointCreator',
+                          'formId', 'locale', 'savepointType', 'savepointTimestamp', 'deleted', 'id']
+        for k in [ x for x in row.keys() if x in fix_row_fields]:
+            if (k == 'savepointTimestamp' and row[k] is None):
+                result[k] = str(datetime.datetime.now())
+            elif (k == 'savepointType' and row[k] is None):
+                result[k] = 'COMPLETE'
+            elif (k in ('createUser','lastUpdateUser', 'savepointCreator') and row[k] is None):
+                result[k] = default_user
+            else:
+                result[k] = row[k]
+        return result
+
+    def sync(self, remoteTable: OdkxServerTable, local_changes_prefix: Optional[str] = None):
         self._sync_iter_pull(remoteTable)
+        definition = remoteTable.getTableDefinition()
+        id_list = []
+        if local_changes_prefix is not None:
+            state_qry = self._qryState(local_changes_prefix, tableDefinition=definition, state=['new', 'modified'])
+            records = []
+            with self.engine.connect() as c:
+                for row in c.execute(state_qry):
+                    records.append(self.row2rec(row, definition, remoteTable.connection.user))
+                    id_list.append(row['id'])
+            json = {'rows': records, 'dataETag': self.getLocalDataETag()}
+            remoteTable.alterDataRows(json)
+            def chunks(l, n):
+                """Yield successive n-sized chunks from l."""
+                for i in range(0, len(l), n):
+                    yield l[i:i + n]
+            for chunk in chunks(id_list, 10):
+                qry = """update {schema}.{localtable} set state='synced' where id in ({ids})""".format(
+                    schema=self.schema,
+                    localtable=self.tableId+'_' + local_changes_prefix,
+                    ids=','.join(["'{c}'".format(c=c) for c in chunk])
+                )
+                with self.engine.begin() as c:
+                    c.execute(qry)
+            self._sync_iter_pull(remoteTable)
+
+
 
     def _getTableMeta(self, tablename: str) -> sqlalchemy.Table:
         meta = sqlalchemy.MetaData()
@@ -222,6 +300,18 @@ class OdkxLocalTable(object):
         df.to_sql(staging_tn, schema=self.schema, if_exists='append', index=False, con=self.engine)
         self.localSyncFromStagingTable(source_prefix, external_id_column)
 
+    def hasPendingLocalChanges(self, source_prefix: str):
+        def_tn = self.tableId + '_' + source_prefix
+        q_test = """
+        select count(id) as aantal from {schema}."{deftn}" where not state in ('unchanged', 'synced')
+        """.format(schema=self.schema, deftn=def_tn)
+        with self.engine.connect() as c:
+            res = c.execute(q_test)
+            for r in res:
+                if r['aantal'] > 0:
+                    return True
+        return False
+
     def localSyncFromStagingTable(self, source_prefix: str, external_id_column: str):
         """
         the table t_prefix contains the state after the previous sync. the staging table (t_prefix_staging) is
@@ -236,14 +326,8 @@ class OdkxLocalTable(object):
         self._copyMissingData(self.tableId, def_tn)
         self.fillHashColumn(def_tn)
 
-        q_test = """
-        select count(id) as aantal from {schema}."{deftn}" where not state in ('unchanged', 'synced')
-        """.format(schema=self.schema, deftn=def_tn)
-        with self.engine.connect() as c:
-            res = c.execute(q_test)
-            for r in res:
-                if r['aantal'] > 0:
-                    raise Exception("unsynced local changes still pending. sync first")
+        if (self.hasPendingLocalChanges(source_prefix)):
+            raise Exception("unsynced local changes still pending. sync first")
 
 
         qry = """
@@ -273,3 +357,4 @@ class OdkxLocalTable(object):
             c.execute("""delete from {schema}."{def_tn}" where {schema}."{def_tn}".id in (select {schema}."{stagingtable}".id from {schema}."{stagingtable}") 
             """.format(schema=self.schema, def_tn=def_tn, stagingtable=staging_tn))
         self._copyMissingData(staging_tn, def_tn)
+
