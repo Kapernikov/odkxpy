@@ -106,7 +106,8 @@ class OdkxLocalTable(object):
             transaction.execute(st.delete())
             for rowset in remoteTable.getDiffGenerator(dataETag=self.getLocalDataETag()):
                 last_rs = rowset
-                transaction.execute(st.insert(), [self.row_asdict(x) for x in rowset.rows])
+                if (len(rowset.rows) > 0):
+                    transaction.execute(st.insert(), [self.row_asdict(x) for x in rowset.rows])
         if not last_rs is None:
             return last_rs.dataETag
 
@@ -179,7 +180,8 @@ class OdkxLocalTable(object):
         locTable = self._getTableMeta(self.tableId)
         locChangesCols = [x.name for x in locChanges.columns]
         locTableCols = [x.name for x in locTable.columns]
-        colsTakeLocally = [x.elementKey for x in tableDefinition if x.isMaterialized()] + ['id', 'rowETag']
+        colsTakeLocally = [x.elementKey for x in tableDefinition if x.isMaterialized()] \
+                          + ['id', 'rowETag', 'savepointTimestamp', 'dataETagAtModification']
         colsTakeLocally = [x for x in locChangesCols if x in colsTakeLocally]
         col_list = ['l."{x}"'.format(x=x) if x in colsTakeLocally else 'r."{x}"'.format(x=x) for x in locTableCols]
         qry = "SELECT {col_list} FROM {schema}.{loctable} l LEFT OUTER JOIN {schema}.{table} r ON l.id = r.id WHERE l.state in ({state})".format(
@@ -217,6 +219,8 @@ class OdkxLocalTable(object):
         for k in [ x for x in row.keys() if x in fix_row_fields]:
             if (k == 'savepointTimestamp' and row[k] is None):
                 result[k] = str(datetime.datetime.now())
+            elif (k == 'savepointTimestamp' and isinstance(row[k], datetime.datetime)):
+                result[k] = str(row[k])
             elif (k == 'savepointType' and row[k] is None):
                 result[k] = 'COMPLETE'
             elif (k in ('createUser','lastUpdateUser', 'savepointCreator') and row[k] is None):
@@ -228,21 +232,31 @@ class OdkxLocalTable(object):
     def sync(self, remoteTable: OdkxServerTable, local_changes_prefix: Optional[str] = None):
         self._sync_iter_pull(remoteTable)
         definition = remoteTable.getTableDefinition()
-        id_list = []
+        id_list_good = []
+        id_list_conflict = []
         if local_changes_prefix is not None:
+            if (self.hasUnresolvedConflicts(local_changes_prefix)):
+                raise Exception("unresolved conflicts, cannot push changes")
             state_qry = self._qryState(local_changes_prefix, tableDefinition=definition, state=['new', 'modified'])
             records = []
             with self.engine.connect() as c:
                 for row in c.execute(state_qry):
                     records.append(self.row2rec(row, definition, remoteTable.connection.user))
-                    id_list.append(row['id'])
             json = {'rows': records, 'dataETag': self.getLocalDataETag()}
-            remoteTable.alterDataRows(json)
+            if (len(records) == 0):
+                return None
+            #return json
+            rs = remoteTable.alterDataRows(json)
+            for outcome in rs['rows']:
+                if outcome['outcome'] == 'IN_CONFLICT':
+                    id_list_conflict.append(outcome['id'])
+                else:
+                    id_list_good.append(outcome['id'])
             def chunks(l, n):
                 """Yield successive n-sized chunks from l."""
                 for i in range(0, len(l), n):
                     yield l[i:i + n]
-            for chunk in chunks(id_list, 10):
+            for chunk in chunks(id_list_good, 10):
                 qry = """update {schema}.{localtable} set state='synced' where id in ({ids})""".format(
                     schema=self.schema,
                     localtable=self.tableId+'_' + local_changes_prefix,
@@ -250,7 +264,16 @@ class OdkxLocalTable(object):
                 )
                 with self.engine.begin() as c:
                     c.execute(qry)
+            for chunk in chunks(id_list_conflict, 10):
+                qry = """update {schema}.{localtable} set state='conflict' where id in ({ids})""".format(
+                    schema=self.schema,
+                    localtable=self.tableId+'_' + local_changes_prefix,
+                    ids=','.join(["'{c}'".format(c=c) for c in chunk])
+                )
+                with self.engine.begin() as c:
+                    c.execute(qry)
             self._sync_iter_pull(remoteTable)
+            return rs
 
 
 
@@ -312,6 +335,29 @@ class OdkxLocalTable(object):
                     return True
         return False
 
+    def hasUnresolvedConflicts(self, source_prefix: str):
+        def_tn = self.tableId + '_' + source_prefix
+        q_test = """
+        select count(id) as aantal from {schema}."{deftn}" where state in ('conflict')
+        """.format(schema=self.schema, deftn=def_tn)
+        with self.engine.connect() as c:
+            res = c.execute(q_test)
+            for r in res:
+                if r['aantal'] > 0:
+                    return True
+        return False
+
+
+    def resetLocalChanges(self, source_prefix: str):
+        def_tn = self.tableId + '_' + source_prefix
+        q_test = """
+        delete from {schema}."{deftn}"
+        """.format(deftn=def_tn,schema=self.schema)
+        with self.engine.begin() as c:
+            c.execute(q_test)
+
+
+
     def localSyncFromStagingTable(self, source_prefix: str, external_id_column: str):
         """
         the table t_prefix contains the state after the previous sync. the staging table (t_prefix_staging) is
@@ -331,7 +377,7 @@ class OdkxLocalTable(object):
 
 
         qry = """
-            UPDATE {schema}."{stagingtable}" set id = {schema}."{realtable}".id, state='modified'
+            UPDATE {schema}."{stagingtable}" set id = {schema}."{realtable}".id, state='modified', "rowETag" = {schema}."{realtable}"."rowETag"
             FROM {schema}."{realtable}" WHERE {schema}."{stagingtable}"."{extid}" = {schema}."{realtable}"."{extid}"
         """
         with self.engine.begin() as c:
@@ -349,6 +395,8 @@ class OdkxLocalTable(object):
         with self.engine.begin() as c:
             c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=def_tn))
             c.execute("""update {schema}."{stagingtable}" set state='new' where state is null""".format(schema=self.schema, stagingtable=staging_tn))
+            c.execute("""update {schema}."{stagingtable}" set "savepointTimestamp"=now() where state in ('new', 'modified')""".format(schema=self.schema, stagingtable=staging_tn))
+            c.execute("""update {schema}."{stagingtable}" set "dataETagAtModification"='{etag}' where state in ('new', 'modified')""".format(schema=self.schema, stagingtable=staging_tn, etag=self.getLocalDataETag()))
 
         self._fillUUIDs(staging_tn, 'id')
         self._fillUUIDs(staging_tn, 'rowETag')
