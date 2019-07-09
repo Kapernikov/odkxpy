@@ -2,7 +2,7 @@ import sqlalchemy
 from .odkx_server_table import OdkxServerTable, OdkxServerTableRow, OdkxServerTableColumn
 from sqlalchemy import MetaData, text
 import os
-from typing import Optional
+from typing import Optional, List
 import hashlib
 import requests
 import logging
@@ -146,7 +146,6 @@ class OdkxLocalTable(object):
         if remoteTable.getdataETag() == self.getLocalDataETag():
             return False
         new_etag = self.stageAllDataChanges(remoteTable)
-        self._staging_to_log()
         st = self._getStagingTable()
         colnames = [x.name for x in st.columns]
 
@@ -156,12 +155,21 @@ class OdkxLocalTable(object):
                 schema=self.schema, table=self.tableId, stagingtable=self.tableId + '_staging'
             ))
             fields = ','.join(['"{colname}"'.format(colname=colname) for colname in colnames])
-            trans.execute("insert into {schema}.{table} ({fields},state) select {fields}, 'sync_attachments' as state from {schema}.{stagingtable}".format(
-                schema=self.schema, table=self.tableId, stagingtable=self.tableId+'_staging', fields=fields
+            fields_v = ','.join(['st."{colname}"'.format(colname=colname) for colname in colnames])
+            trans.execute("""insert into {schema}.{table} ({fields},state) select {fields_v}, 'sync_attachments' as state from {schema}.{stagingtable} st
+            inner join (select id, max("savepointTimestamp") as "savepointTimestamp" from {schema}.{stagingtable} group by id) latest on latest.id = st.id and 
+            latest."savepointTimestamp" = st."savepointTimestamp"
+            """.format(
+                schema=self.schema, table=self.tableId, stagingtable=self.tableId+'_staging', fields=fields, fields_v=fields_v
             ))
+        self._staging_to_log()
         self._sync_pull_attachments(remoteTable)
         self.updateLocalStatusDb(new_etag)
         return True
+
+    def _sync_push(self, remoteTable: OdkxServerTable, rows: List[OdkxServerTableRow]):
+        if remoteTable.getdataETag() != self.getLocalDataETag():
+            raise Exception("please pull first")
 
 
     def sync(self, remoteTable: OdkxServerTable):
