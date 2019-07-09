@@ -111,7 +111,7 @@ class SqlLocalStorage(object):
 
 
         if not 'rowETag' in t.c:
-            t.append_column(sqlalchemy.Column('rowETag', sqlalchemy.String(50), primary_key=(log_table and not no_create_standard_pkey) ))
+            t.append_column(sqlalchemy.Column('rowETag', sqlalchemy.String(50), primary_key=(log_table and not no_create_standard_pkey)))
 
         for cn in ['locale', 'savepointType']:
             if not cn in t.c:
@@ -126,7 +126,9 @@ class SqlLocalStorage(object):
         if not 'deleted' in t.c:
             t.append_column(sqlalchemy.Column('deleted', sqlalchemy.Boolean))
         if not 'id' in t.c:
-            t.append_column(sqlalchemy.Column('id', sqlalchemy.String(50), primary_key=not log_table and not no_create_standard_pkey, nullable=False))
+            pkey = ((not log_table) and not no_create_standard_pkey)
+            nullable = not pkey
+            t.append_column(sqlalchemy.Column('id', sqlalchemy.String(50), primary_key=pkey, nullable=nullable))
 
         meta.create_all(self.engine)
 

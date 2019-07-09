@@ -183,10 +183,14 @@ class OdkxLocalTable(object):
 
     def fillHashColumn(self, table_name):
         tm = self._getTableMeta(table_name)
-        exclude_columns = ['hash','state', 'dataETagAtModification', 'formId', 'rowETag']
+        exclude_columns = ['hash','state', 'dataETagAtModification', 'formId', 'rowETag', 'savepointTimestamp', 'savepointCreator',
+                           'createUser','lastUpdateUser','locale','savepointType']
         columns_to_hash = [x.name for x in tm.columns
                            if not x.name in exclude_columns]
-        qry = """UPDATE {schema}.{table} set hash=md5(ROW({cols})::TEXT)""".format(cols=','.join(['"{c}"'.format(c=c) for c in columns_to_hash]))
+        qry = """UPDATE {schema}.{table} set hash=md5(ROW({cols})::TEXT)""".format(
+            schema=self.schema,
+            table=table_name,
+            cols=','.join(['"{c}"'.format(c=c) for c in columns_to_hash]))
         with self.engine.begin() as c:
             c.execute(qry)
 
@@ -213,7 +217,9 @@ class OdkxLocalTable(object):
     def localSyncFromDataframe(self, source_prefix: str, external_id_column: str, df: pd.DataFrame):
         staging_tn = self.tableId + '_' + source_prefix + '_staging'
         qry = """DELETE FROM {schema}."{tn}" """.format(schema=self.schema, tn=staging_tn)
-        df.to_sql(staging_tn, schema=self.schema, if_exists='append', index=False)
+        with self.engine.begin() as c:
+            c.execute(qry)
+        df.to_sql(staging_tn, schema=self.schema, if_exists='append', index=False, con=self.engine)
         self.localSyncFromStagingTable(source_prefix, external_id_column)
 
     def localSyncFromStagingTable(self, source_prefix: str, external_id_column: str):
@@ -230,6 +236,15 @@ class OdkxLocalTable(object):
         self._copyMissingData(self.tableId, def_tn)
         self.fillHashColumn(def_tn)
 
+        q_test = """
+        select count(id) as aantal from {schema}."{deftn}" where not state in ('unchanged', 'synced')
+        """.format(schema=self.schema, deftn=def_tn)
+        with self.engine.connect() as c:
+            res = c.execute(q_test)
+            for r in res:
+                if r['aantal'] > 0:
+                    raise Exception("unsynced local changes still pending. sync first")
+
 
         qry = """
             UPDATE {schema}."{stagingtable}" set id = {schema}."{realtable}".id, state='modified'
@@ -237,6 +252,7 @@ class OdkxLocalTable(object):
         """
         with self.engine.begin() as c:
             c.execute("update {schema}.{stagingtable} set state=null".format(schema=self.schema, stagingtable=staging_tn))
+            c.execute("update {schema}.{stagingtable} set deleted=False where deleted is null".format(schema=self.schema, stagingtable=staging_tn))
             c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=def_tn, extid=external_id_column))
             c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=self.tableId, extid=external_id_column))
 
