@@ -1,6 +1,7 @@
 import sqlalchemy
 from .odkx_server_table import OdkxServerTable
 from .odkx_local_table import OdkxLocalTable
+from typing import Optional, List
 
 class SqlLocalStorage(object):
     def __init__(self, engine: sqlalchemy.engine.Engine, schema: str):
@@ -16,6 +17,18 @@ class SqlLocalStorage(object):
         self._createLocalTable(server_table, True)
         self._createLocalTable(server_table, True, server_table.tableId + '_staging')
         self._createStatusTable()
+
+    def intializeExternalSource(self, source_prefix: str, server_table: OdkxServerTable, relevant_columns: Optional[List[str]] = None):
+        self.initializeLocalStorage(server_table)
+        self._createLocalTable(server_table, False, server_table.tableId + '_' + source_prefix, True, relevant_columns)
+        self._createLocalTable(server_table, False, server_table.tableId + '_' + source_prefix + '_staging', True, relevant_columns, no_create_standard_pkey=True)
+
+    def _getTableMeta(self, tablename: str) -> sqlalchemy.Table:
+        meta = sqlalchemy.MetaData()
+        meta.reflect(self.engine, schema=self.schema, only=[tablename])
+        return meta.tables.get(self.schema+ '.' + tablename)
+
+
 
 
     def _createStatusTable(self):
@@ -38,7 +51,9 @@ class SqlLocalStorage(object):
         meta.create_all()
 
 
-    def _createLocalTable(self, server_table: OdkxServerTable, log_table: bool = False, table_name_instead = None):
+    def _createLocalTable(self, server_table: OdkxServerTable, log_table: bool = False, table_name_instead = None,
+                          create_local_sync_cols: bool = False, only_create_datacols: Optional[List[str]] = None,
+                          no_create_standard_pkey : bool = False):
         s_tn = server_table.tableId + ('_log' if log_table else '')
         if table_name_instead:
             s_tn = table_name_instead
@@ -54,9 +69,18 @@ class SqlLocalStorage(object):
                 t = meta.tables.get(full_tn)  # sqlalchemy.Table
         except sqlalchemy.exc.InvalidRequestError:
             t = sqlalchemy.Table(s_tn, meta, schema=self.schema)
-        for col in server_table.getTableDefinition():
+        definition = server_table.getTableDefinition()
+        column_names = [x.elementKey for x in definition if x.isMaterialized()]
+        if not only_create_datacols is None:
+            for c in only_create_datacols:
+                if not c in column_names:
+                    raise Exception("don't know about column " + c)
+        for col in definition:
             if not col.isMaterialized():
                 continue
+            if not (only_create_datacols is None):
+                if not col.elementKey in only_create_datacols:
+                    continue
             cname = col.elementKey
             dt = sqlalchemy.Text
             if col.elementType == 'string':
@@ -79,7 +103,7 @@ class SqlLocalStorage(object):
             if not cn in t.c:
                 t.append_column(sqlalchemy.Column(cn, sqlalchemy.String(50)))
 
-        if not log_table:
+        if create_local_sync_cols:
             if not 'hash' in t.c:
                 t.append_column(sqlalchemy.Column('hash', sqlalchemy.String(50)))
             if not 'state' in t.c:
@@ -87,7 +111,7 @@ class SqlLocalStorage(object):
 
 
         if not 'rowETag' in t.c:
-            t.append_column(sqlalchemy.Column('rowETag', sqlalchemy.String(50), primary_key=log_table))
+            t.append_column(sqlalchemy.Column('rowETag', sqlalchemy.String(50), primary_key=(log_table and not no_create_standard_pkey) ))
 
         for cn in ['locale', 'savepointType']:
             if not cn in t.c:
@@ -102,7 +126,7 @@ class SqlLocalStorage(object):
         if not 'deleted' in t.c:
             t.append_column(sqlalchemy.Column('deleted', sqlalchemy.Boolean))
         if not 'id' in t.c:
-            t.append_column(sqlalchemy.Column('id', sqlalchemy.String(50), primary_key=not log_table, nullable=False))
+            t.append_column(sqlalchemy.Column('id', sqlalchemy.String(50), primary_key=not log_table and not no_create_standard_pkey, nullable=False))
 
         meta.create_all(self.engine)
 

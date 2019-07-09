@@ -7,6 +7,7 @@ import hashlib
 import requests
 import logging
 import datetime
+import pandas as pd
 
 class FilesystemAttachmentStore(object):
     def __init__(self, path):
@@ -174,3 +175,85 @@ class OdkxLocalTable(object):
 
     def sync(self, remoteTable: OdkxServerTable):
         self._sync_iter_pull(remoteTable)
+
+    def _getTableMeta(self, tablename: str) -> sqlalchemy.Table:
+        meta = sqlalchemy.MetaData()
+        meta.reflect(self.engine, schema=self.schema, only=[tablename])
+        return meta.tables.get(self.schema+ '.' + tablename)
+
+    def fillHashColumn(self, table_name):
+        tm = self._getTableMeta(table_name)
+        exclude_columns = ['hash','state', 'dataETagAtModification', 'formId', 'rowETag']
+        columns_to_hash = [x.name for x in tm.columns
+                           if not x.name in exclude_columns]
+        qry = """UPDATE {schema}.{table} set hash=md5(ROW({cols})::TEXT)""".format(cols=','.join(['"{c}"'.format(c=c) for c in columns_to_hash]))
+        with self.engine.begin() as c:
+            c.execute(qry)
+
+    def _copyMissingData(self, tn1, tn2):
+        t1 = self._getTableMeta(tn1)
+        t2 = self._getTableMeta(tn2)
+        t1_cols = [x.name for x in t1.columns]
+        t2_cols = [x.name for x in t2.columns]
+        common_cols = [x for x in t1_cols if x in t2_cols]
+        qry = """
+            INSERT INTO {schema}."{tn2}" ({cols}) select {cols} from {schema}."{tn1}" where not {schema}."{tn1}".id in (select id from {schema}."{tn2}")
+        """.format(schema=self.schema, tn1= tn1, tn2 = tn2, cols=",".join(['"{c}"'.format(c=x) for x in common_cols]))
+        with self.engine.begin() as c:
+            c.execute(qry)
+
+    def _fillUUIDs(self, tn, uuid_col):
+        qry = """
+            UPDATE {schema}."{tn}" set "{uuid_col}"=md5(random()::text || clock_timestamp()::text)::uuid where "{uuid_col}" is null
+        """.format(schema=self.schema, tn=tn, uuid_col=uuid_col)
+        with self.engine.begin() as c:
+            c.execute(qry)
+
+
+    def localSyncFromDataframe(self, source_prefix: str, external_id_column: str, df: pd.DataFrame):
+        staging_tn = self.tableId + '_' + source_prefix + '_staging'
+        qry = """DELETE FROM {schema}."{tn}" """.format(schema=self.schema, tn=staging_tn)
+        df.to_sql(staging_tn, schema=self.schema, if_exists='append', index=False)
+        self.localSyncFromStagingTable(source_prefix, external_id_column)
+
+    def localSyncFromStagingTable(self, source_prefix: str, external_id_column: str):
+        """
+        the table t_prefix contains the state after the previous sync. the staging table (t_prefix_staging) is
+        compared with this table to determine what changed.
+        :param source_prefix:
+        :param external_id_column:
+        :return:
+        """
+
+        staging_tn = self.tableId + '_' + source_prefix + '_staging'
+        def_tn = self.tableId + '_' + source_prefix
+        self._copyMissingData(self.tableId, def_tn)
+        self.fillHashColumn(def_tn)
+
+
+        qry = """
+            UPDATE {schema}."{stagingtable}" set id = {schema}."{realtable}".id, state='modified'
+            FROM {schema}."{realtable}" WHERE {schema}."{stagingtable}"."{extid}" = {schema}."{realtable}"."{extid}"
+        """
+        with self.engine.begin() as c:
+            c.execute("update {schema}.{stagingtable} set state=null".format(schema=self.schema, stagingtable=staging_tn))
+            c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=def_tn, extid=external_id_column))
+            c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=self.tableId, extid=external_id_column))
+
+        self.fillHashColumn(staging_tn)
+        qry = """
+            UPDATE {schema}."{stagingtable}" set "rowETag" = {schema}."{realtable}"."rowETag", state='unchanged'
+            FROM {schema}."{realtable}" WHERE {schema}."{stagingtable}".id = {schema}."{realtable}".id AND 
+            {schema}."{stagingtable}".hash = {schema}."{realtable}".hash
+        """
+        with self.engine.begin() as c:
+            c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=def_tn))
+            c.execute("""update {schema}."{stagingtable}" set state='new' where state is null""".format(schema=self.schema, stagingtable=staging_tn))
+
+        self._fillUUIDs(staging_tn, 'id')
+        self._fillUUIDs(staging_tn, 'rowETag')
+
+        with self.engine.begin() as c:
+            c.execute("""delete from {schema}."{def_tn}" where {schema}."{def_tn}".id in (select {schema}."{stagingtable}".id from {schema}."{stagingtable}") 
+            """.format(schema=self.schema, def_tn=def_tn, stagingtable=staging_tn))
+        self._copyMissingData(staging_tn, def_tn)
