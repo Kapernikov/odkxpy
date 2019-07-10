@@ -173,6 +173,8 @@ class OdkxLocalTable(object):
 
     def _sync_iter_pull(self, remoteTable: OdkxServerTable):
         if remoteTable.getdataETag() == self.getLocalDataETag():
+            ## we still need to check if we need to download attachments
+            self._sync_pull_attachments(remoteTable)
             return False
         new_etag = self.stageAllDataChanges(remoteTable)
         st = self._getStagingTable()
