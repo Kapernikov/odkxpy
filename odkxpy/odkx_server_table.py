@@ -3,7 +3,7 @@ from collections import namedtuple
 from .odkx_connection import OdkxConnection
 import datetime
 import logging
-from typing import List, Generator
+from typing import List, Generator, NamedTuple
 
 OdkxServerTableInfo = namedtuple('OdkxServerTableInfo', [
         'tableId', 'dataETag', 'schemaETag', 'selfUri', 'definitionUri', 'dataUri', 'instanceFilesUri', 'diffUri', 'aclUri', 'tableLevelManifestETag'
@@ -16,10 +16,32 @@ OdkxServerTableRowset = namedtuple('OdkxServerTableRowset',
                                    ['rows', 'dataETag', 'tableUri', 'webSafeRefetchCursor', 'webSafeBackwardCursor', 'webSafeResumeCursor', 'hasMoreResults', 'hasPriorResults']
                                    )
 
-OdkxServerTableRow = namedtuple('OdkxServerTableRow',
-                                ['rowETag', 'dataETagAtModification', 'deleted', 'createUser', 'lastUpdateUser', 'formId', 'locale', 'savepointType', 'savepointTimestamp', 'savepointCreator', 'orderedColumns', 'selfUri', 'id', 'filterScope'])
-
 OdkxServerTableColumn = namedtuple('OdkxServerTableColumn', ['column', 'value'])
+
+class RowFilterScope(NamedTuple):
+    defaultAccess: str ## FULL, MODIFY, READ_ONLY, HIDDEN,
+    rowOwner: str
+    groupReadOnly: str
+    groupModify: str
+    groupPrivileged: str
+
+class OdkxServerTableRow(NamedTuple):
+    rowETag: str
+    dataETagAtModification: str
+    deleted: bool
+    createUser: str
+    lastUpdateUser: str
+    formId: str
+    locale: str
+    savepointType: str
+    savepointTimestamp: datetime.datetime
+    savepointCreator: str
+    orderedColumns: List[OdkxServerTableColumn]
+    selfUri: str
+    id: str
+    filterScope: RowFilterScope
+
+
 
 class OdkxServerColumnDefinition(object):
     def __init__(self, elementKey=None, elementName = None, elementType= None, childElements=None, parentElement=None):
@@ -151,6 +173,8 @@ class OdkxServerTable(object):
     def _parse_row(self, r):
         def rw(x):
             x['orderedColumns'] = [OdkxServerTableColumn(**z) for z in x['orderedColumns']]
+            fs = x['filterScope']
+            x['filterScope'] = RowFilterScope(**fs)
             return x
         return OdkxServerTableRow(**rw(r))
 

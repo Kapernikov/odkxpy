@@ -92,6 +92,11 @@ class OdkxLocalTable(object):
         dct['savepointType'] = r.savepointType
         dct['savepointTimestamp'] = r.savepointTimestamp
         dct['deleted'] = r.deleted
+        dct['defaultAccess'] = r.filterScope.defaultAccess
+        dct['groupModify'] = r.filterScope.groupModify
+        dct['groupPrivileged'] = r.filterScope.groupPrivileged
+        dct['groupReadOnly'] = r.filterScope.groupReadOnly
+        dct['rowOwner'] = r.filterScope.rowOwner
         dct['id'] = r.id
         for col in r.orderedColumns:
             assert isinstance(col, OdkxServerTableColumn)
@@ -175,13 +180,18 @@ class OdkxLocalTable(object):
             raise Exception("please pull first")
 
 
-    def _qryState(self, local_changes_prefix: str, tableDefinition: List[OdkxServerColumnDefinition], state: List[str]):
+    def _qryState(self, local_changes_prefix: str, tableDefinition: List[OdkxServerColumnDefinition], state: List[str], force_push: bool):
         locChanges = self._getTableMeta(self.tableId + '_' + local_changes_prefix)
         locTable = self._getTableMeta(self.tableId)
         locChangesCols = [x.name for x in locChanges.columns]
         locTableCols = [x.name for x in locTable.columns]
         colsTakeLocally = [x.elementKey for x in tableDefinition if x.isMaterialized()] \
                           + ['id', 'rowETag', 'savepointTimestamp', 'dataETagAtModification']
+        if force_push:
+            # take row ETag directly from server, making push always work even if we updated old data
+            # it can still conflict but now only because somebody uploaded between us pulling and us pushing
+            colsTakeLocally = [x for x in colsTakeLocally if not x in ['rowETag']]
+
         colsTakeLocally = [x for x in locChangesCols if x in colsTakeLocally]
         col_list = ['l."{x}"'.format(x=x) if x in colsTakeLocally else 'r."{x}"'.format(x=x) for x in locTableCols]
         qry = "SELECT {col_list} FROM {schema}.{loctable} l LEFT OUTER JOIN {schema}.{table} r ON l.id = r.id WHERE l.state in ({state})".format(
@@ -229,7 +239,7 @@ class OdkxLocalTable(object):
                 result[k] = row[k]
         return result
 
-    def sync(self, remoteTable: OdkxServerTable, local_changes_prefix: Optional[str] = None):
+    def sync(self, remoteTable: OdkxServerTable, local_changes_prefix: Optional[str] = None, force_push: bool = False):
         self._sync_iter_pull(remoteTable)
         definition = remoteTable.getTableDefinition()
         id_list_good = []
@@ -237,7 +247,7 @@ class OdkxLocalTable(object):
         if local_changes_prefix is not None:
             if (self.hasUnresolvedConflicts(local_changes_prefix)):
                 raise Exception("unresolved conflicts, cannot push changes")
-            state_qry = self._qryState(local_changes_prefix, tableDefinition=definition, state=['new', 'modified'])
+            state_qry = self._qryState(local_changes_prefix, tableDefinition=definition, state=['new', 'modified'], force_push=force_push)
             records = []
             with self.engine.connect() as c:
                 for row in c.execute(state_qry):
@@ -360,10 +370,29 @@ class OdkxLocalTable(object):
 
     def localSyncFromStagingTable(self, source_prefix: str, external_id_column: str):
         """
+        DO NOT USE THIS FUNCTION if you are writing an interactive editing application.
+        this function takes the sync time as edit time, which is not right for editing apps
+
+        an editing app should do the following when saving a record:
+         * taking the record from the master table and making modifications
+         * setting savepointTimestamp / lastUpdateUser / savepointType accordingly
+         * delete old record from the externalsource table
+         * replace it by the updated record
+
+        this is only for batch syncing with systems that don't know about record versions and edit timestamps
+
+        it will consider the following tables:
+         * [tableId]_[externalsource]_staging --> the staging table. just dump data there (to create a staging table, see SqlLocalStorage.initializeExternalSource)
+         * [tableId]_[externalsource] --> the table containing the modifications coming from externalsource
+
+        this function will compare the staging with the modif tables, apply changes to the modif table while setting the relevant metadata fields
+        when an update happens on the odkX server on a record after the record has been modified by the localSync, a conflict will arise and the sync
+        will fail. to prevent this, one can use force_push=True while syncing
+
         the table t_prefix contains the state after the previous sync. the staging table (t_prefix_staging) is
         compared with this table to determine what changed.
-        :param source_prefix:
-        :param external_id_column:
+        :param source_prefix: the name of the external source (use lowercase no spaces)
+        :param external_id_column: the primary key field of a record IN THE EXTERNAL SYSTEM (so not the odkx ID field)
         :return:
         """
 
