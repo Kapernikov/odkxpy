@@ -42,10 +42,10 @@ class FilesystemAttachmentStore(object):
 
 
 class OdkxLocalTable(object):
-    def __init__(self, tableId: str, engine: sqlalchemy.engine.Engine, schema: str):
+    def __init__(self, tableId: str, engine: sqlalchemy.engine.Engine, schema: str, attachment_store_path: Optional[str]=None):
         self.tableId = tableId
         self.schema = schema
-        self.attachments = FilesystemAttachmentStore(os.getcwd())
+        self.attachments = FilesystemAttachmentStore(os.getcwd() if attachment_store_path is None else attachment_store_path)
         self.engine: sqlalchemy.engine.Engine = engine
 
     def getLocalDataETag(self):
