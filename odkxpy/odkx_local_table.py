@@ -169,7 +169,7 @@ class OdkxLocalTable(object):
             ( 
             select l.id, max(l."rowETag") as "rowETag" from {schema}.{stagingtable} l inner join
             (select id, max("savepointTimestamp") as "savepointTimestamp" from {schema}.{stagingtable} group by id) latest_timestamp 
-            on l.id = latest_timestamp.id and l."savepointTimestamp" = latest_timestamp."savepointTimestamp" group by id
+            on l.id = latest_timestamp.id and l."savepointTimestamp" = latest_timestamp."savepointTimestamp" group by l.id
             ) latest
             on latest.id = st.id and 
             latest."rowETag" = st."rowETag"
