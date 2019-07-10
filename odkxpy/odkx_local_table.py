@@ -121,27 +121,43 @@ class OdkxLocalTable(object):
         if not last_rs is None:
             return last_rs.dataETag
 
-    def downloadAttachments(self, remoteTable: OdkxServerTable, rowId: str):
+    def downloadAttachments(self, remoteTable: OdkxServerTable, rowId: str, target_file_list: List[str]):
+        got_files = []
         for f in remoteTable.getAttachmentsManifest(rowId):
+            got_files.append(f.filename)
             if self.attachments.hasFile(rowId, f.filename):
                 if self.attachments.getMD5(rowId, f.filename) == f.md5hash:
                     continue
             self.attachments.storeFile(rowId, f.filename,
                                        remoteTable.getAttachment(rowId, f.filename, stream=True, timeout=300))
+        missing_files = [x for x in target_file_list if not x in got_files]
+        if len(missing_files) > 0:
+            print("MISSING FILES (trying again on next sync) for ", rowId, str(missing_files), "\ngot\n" ,str(got_files))
+            return False
+        return True
 
 
     def _sync_pull_attachments(self, remoteTable: OdkxServerTable):
-        ids = None
+        attach_cols = [x.elementKey for x in remoteTable.getTableDefinition() if x.elementType == 'rowpath']
+        if len(attach_cols) == 0:
+            return
+        ids = []
+        files_by_id = {}
         with self.engine.connect() as c:
-            result = c.execute("select id from {schema}.{table} where state='sync_attachments'".format(
-                schema=self.schema, table=self.tableId
+            result = c.execute("select id, {cols} from {schema}.{table} where state='sync_attachments'".format(
+                schema=self.schema, table=self.tableId,
+                cols=",".join(['"{c}"'.format(c=c) for c in attach_cols])
             ))
-            ids = [r[0] for r in result]
+            for r in result:
+                ids.append(r['id'])
+                files_by_id[r['id']] = [r[x] for x in attach_cols if not r[x] is None]
+        print("syncing ", len(ids) , " rows attachments")
+
         for id in ids:
-            self.downloadAttachments(remoteTable, id)
-            with self.engine.connect() as c:
-                c.execute(sqlalchemy.sql.text("update {schema}.{table} set state='synced' where id=:rowid".format(
-                    schema=self.schema, table=self.tableId)), rowid=id)
+            if self.downloadAttachments(remoteTable, id, files_by_id[id]):
+                with self.engine.connect() as c:
+                    c.execute(sqlalchemy.sql.text("update {schema}.{table} set state='synced' where id=:rowid".format(
+                        schema=self.schema, table=self.tableId)), rowid=id)
 
     def _staging_to_log(self):
         st = self._getStagingTable()
