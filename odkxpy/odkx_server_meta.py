@@ -12,6 +12,9 @@ OdkxServerUser = namedtuple('OdkxServerUser', [
 OdkxServerUser.__new__.__defaults__ = (None, ) * len(OdkxServerUser._fields)
 
 class OdkxServerMeta(object):
+    """
+    this is a wrapper around the global metadata REST API
+    """
     def __init__(self, connection: OdkxConnection):
         self.connection = connection
 

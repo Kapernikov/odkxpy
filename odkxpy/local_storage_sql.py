@@ -23,6 +23,21 @@ class SqlLocalStorage(object):
         self._createStatusTable()
 
     def intializeExternalSource(self, source_prefix: str, server_table: OdkxServerTable, relevant_columns: Optional[List[str]] = None):
+        """
+        initialize a staging table and an external modifications table for a certain external source.
+        the staging table will be called [tableId]_[sourceprefix]_staging, and the external source table will be called [tableId]_[sourceprefix]
+
+        when creating such a table it is important to only create this table for the fields that you really plan to update using this external source.
+        this will prevent blanking out fields that you don't want to touch.
+
+        it is then possible to use localTable.localSync to fill the external modifications table from the staging table (or from a dataframe)
+        or to write directly to the external modifications table (eg using an interactive app)
+
+        :param source_prefix:
+        :param server_table:
+        :param relevant_columns:
+        :return:
+        """
         self.initializeLocalStorage(server_table)
         self._createLocalTable(server_table, log_table=False, table_name_instead=server_table.tableId + '_' + source_prefix, create_hash_col=True,
                                create_state_col=True, only_create_datacols=relevant_columns)

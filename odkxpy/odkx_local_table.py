@@ -8,6 +8,11 @@ import requests
 import logging
 import datetime
 import pandas as pd
+from enum import Enum
+
+class LocalSyncMode(Enum):
+    FULL = 1
+    ONLY_NEW_RECORDS = 2
 
 class FilesystemAttachmentStore(object):
     def __init__(self, path):
@@ -374,7 +379,7 @@ class OdkxLocalTable(object):
 
 
 
-    def localSyncFromStagingTable(self, source_prefix: str, external_id_column: str):
+    def localSyncFromStagingTable(self, source_prefix: str, external_id_column: str, localSyncMode: LocalSyncMode = LocalSyncMode.FULL):
         """
         DO NOT USE THIS FUNCTION if you are writing an interactive editing application.
         this function takes the sync time as edit time, which is not right for editing apps
@@ -443,7 +448,10 @@ class OdkxLocalTable(object):
         self._fillUUIDs(staging_tn, 'rowETag')
 
         with self.engine.begin() as c:
-            c.execute("""delete from {schema}."{def_tn}" where {schema}."{def_tn}".id in (select {schema}."{stagingtable}".id from {schema}."{stagingtable}") 
-            """.format(schema=self.schema, def_tn=def_tn, stagingtable=staging_tn))
+            w = ""
+            if localSyncMode == LocalSyncMode.ONLY_NEW_RECORDS:
+                w = " WHERE state in ('new') "
+            c.execute("""delete from {schema}."{def_tn}" where {schema}."{def_tn}".id in (select {schema}."{stagingtable}".id from {schema}."{stagingtable}" {w}) 
+            """.format(schema=self.schema, def_tn=def_tn, stagingtable=staging_tn, w=w))
         self._copyMissingData(staging_tn, def_tn)
 

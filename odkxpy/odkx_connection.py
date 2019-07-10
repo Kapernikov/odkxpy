@@ -6,6 +6,7 @@ import logging
 
 class OdkxConnection(object):
     """
+    This is a connection to a ODK-X sync endpoint REST API
     TODO : implement client version support
     """
     def __init__(self, server, user, pwd, proxies=None, appID="default"):

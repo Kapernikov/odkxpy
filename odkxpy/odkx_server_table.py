@@ -86,6 +86,10 @@ from .odkx_server_file import OdkxServerFile
 
 
 class OdkxServerTable(object):
+    """
+    wrapper around the ODKX sync endpoint rest API for one specific table.
+    to get a table, use OdkxServerMeta
+    """
     def __init__(self, con: OdkxConnection, tableId: str, schemaETag: str):
         self.connection = con
         self.tableId = tableId
