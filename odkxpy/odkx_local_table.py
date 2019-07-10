@@ -165,8 +165,14 @@ class OdkxLocalTable(object):
             fields = ','.join(['"{colname}"'.format(colname=colname) for colname in colnames])
             fields_v = ','.join(['st."{colname}"'.format(colname=colname) for colname in colnames])
             trans.execute("""insert into {schema}.{table} ({fields},state) select {fields_v}, 'sync_attachments' as state from {schema}.{stagingtable} st
-            inner join (select id, max("savepointTimestamp") as "savepointTimestamp" from {schema}.{stagingtable} group by id) latest on latest.id = st.id and 
-            latest."savepointTimestamp" = st."savepointTimestamp"
+            inner join 
+            ( 
+            select l.id, max(l."rowETag") as "rowETag" from {schema}.{stagingtable} l inner join
+            (select id, max("savepointTimestamp") as "savepointTimestamp" from {schema}.{stagingtable} group by id) latest_timestamp 
+            on l.id = latest_timestamp.id and l."savepointTimestamp" = latest_timestamp."savepointTimestamp" group by id
+            ) latest
+            on latest.id = st.id and 
+            latest."rowETag" = st."rowETag"
             """.format(
                 schema=self.schema, table=self.tableId, stagingtable=self.tableId+'_staging', fields=fields, fields_v=fields_v
             ))
