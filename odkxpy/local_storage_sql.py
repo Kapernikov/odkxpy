@@ -13,15 +13,17 @@ class SqlLocalStorage(object):
         return OdkxLocalTable(server_table.tableId, self.engine, self.schema)
 
     def initializeLocalStorage(self, server_table: OdkxServerTable):
-        self._createLocalTable(server_table, False)
-        self._createLocalTable(server_table, True)
-        self._createLocalTable(server_table, True, server_table.tableId + '_staging')
+        self._createLocalTable(server_table, log_table=False, create_state_col=True)
+        self._createLocalTable(server_table, log_table=True)
+        self._createLocalTable(server_table, log_table=True, table_name_instead=server_table.tableId + '_staging')
         self._createStatusTable()
 
     def intializeExternalSource(self, source_prefix: str, server_table: OdkxServerTable, relevant_columns: Optional[List[str]] = None):
         self.initializeLocalStorage(server_table)
-        self._createLocalTable(server_table, False, server_table.tableId + '_' + source_prefix, True, relevant_columns)
-        self._createLocalTable(server_table, False, server_table.tableId + '_' + source_prefix + '_staging', True, relevant_columns, no_create_standard_pkey=True)
+        self._createLocalTable(server_table, log_table=False, table_name_instead=server_table.tableId + '_' + source_prefix, create_hash_col=True,
+                               create_state_col=True, only_create_datacols=relevant_columns)
+        self._createLocalTable(server_table, log_table=False, table_name_instead=server_table.tableId + '_' + source_prefix + '_staging',
+                               create_hash_col=True, create_state_col=True, only_create_datacols=relevant_columns, no_create_standard_pkey=True)
 
     def _getTableMeta(self, tablename: str) -> sqlalchemy.Table:
         meta = sqlalchemy.MetaData()
@@ -52,7 +54,7 @@ class SqlLocalStorage(object):
 
 
     def _createLocalTable(self, server_table: OdkxServerTable, log_table: bool = False, table_name_instead = None,
-                          create_local_sync_cols: bool = False, only_create_datacols: Optional[List[str]] = None,
+                          create_hash_col: bool = False, create_state_col: bool = False, only_create_datacols: Optional[List[str]] = None,
                           no_create_standard_pkey : bool = False):
         s_tn = server_table.tableId + ('_log' if log_table else '')
         if table_name_instead:
@@ -103,9 +105,10 @@ class SqlLocalStorage(object):
             if not cn in t.c:
                 t.append_column(sqlalchemy.Column(cn, sqlalchemy.String(50)))
 
-        if create_local_sync_cols:
+        if create_hash_col:
             if not 'hash' in t.c:
                 t.append_column(sqlalchemy.Column('hash', sqlalchemy.String(50)))
+        if create_state_col:
             if not 'state' in t.c:
                 t.append_column(sqlalchemy.Column('state', sqlalchemy.String(50)))
 

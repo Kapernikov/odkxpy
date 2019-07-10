@@ -423,8 +423,14 @@ class OdkxLocalTable(object):
         """
         with self.engine.begin() as c:
             c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=def_tn))
-            c.execute("""update {schema}."{stagingtable}" set state='new' where state is null""".format(schema=self.schema, stagingtable=staging_tn))
-            c.execute("""update {schema}."{stagingtable}" set "savepointTimestamp"=now() where state in ('new', 'modified')""".format(schema=self.schema, stagingtable=staging_tn))
+            c.execute("""update {schema}."{stagingtable}" set state='new', "createUser" = 'localSync'
+                        where state is null""".format(schema=self.schema, stagingtable=staging_tn))
+            c.execute("""update {schema}."{stagingtable}" set "savepointTimestamp"=now(), 
+                        "savepointCreator"='localSync', 
+                        "savepointType"='COMPLETE',
+                        "formId"='localSync',
+                        "lastUpdateUser"='localSync',
+                        where state in ('new', 'modified')""".format(schema=self.schema, stagingtable=staging_tn))
             c.execute("""update {schema}."{stagingtable}" set "dataETagAtModification"='{etag}' where state in ('new', 'modified')""".format(schema=self.schema, stagingtable=staging_tn, etag=self.getLocalDataETag()))
 
         self._fillUUIDs(staging_tn, 'id')
