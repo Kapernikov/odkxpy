@@ -2,15 +2,19 @@ import sqlalchemy
 from .odkx_server_table import OdkxServerTable
 from .odkx_local_table import OdkxLocalTable
 from typing import Optional, List
+import os
 
 class SqlLocalStorage(object):
-    def __init__(self, engine: sqlalchemy.engine.Engine, schema: str):
+    def __init__(self, engine: sqlalchemy.engine.Engine, schema: str, file_storage_root: str):
         self.engine = engine
         self.schema = schema
+        self.file_storage_root = file_storage_root
 
     def getLocalTable(self, server_table: OdkxServerTable) -> OdkxLocalTable:
+        filestore = os.path.join(self.file_storage_root, server_table.tableId)
+        os.makedirs(filestore, exist_ok=True)
         self.initializeLocalStorage(server_table)
-        return OdkxLocalTable(server_table.tableId, self.engine, self.schema)
+        return OdkxLocalTable(server_table.tableId, self.engine, self.schema, filestore)
 
     def initializeLocalStorage(self, server_table: OdkxServerTable):
         self._createLocalTable(server_table, log_table=False, create_state_col=True)
