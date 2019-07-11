@@ -379,7 +379,7 @@ class OdkxLocalTable(object):
         with self.engine.begin() as c:
             c.execute(qry)
 
-    def localSyncFromDataframe(self, source_prefix: str, external_id_column: str, df: pd.DataFrame):
+    def localSyncFromDataframe(self, source_prefix: str, external_id_column: str, df: pd.DataFrame, localSyncMode: LocalSyncMode = LocalSyncMode.FULL):
         """
         to sync changes from a dataframe:
           * first do initializeExternalSource
@@ -394,8 +394,9 @@ class OdkxLocalTable(object):
         won't work when there are already changes pending)
 
         :param source_prefix: the prefix of the externalSource
-        :param external_id_column:
-        :param df:
+        :param external_id_column: the "ID" you want to use as primary key for this operation. if you just want to use the ODKX id, pas "id"
+        :param df: a dataframe containing at least the external_id_column and then one or more columns that also appear in the ODKX table.
+        :param localSyncMode: FULL or ONLY_NEW_RECORDS. when ONLY_NEW_RECORDS then modifications will not be synced only additions.
         :return:
         """
         staging_tn = self.tableId + '_' + source_prefix + '_staging'
@@ -406,7 +407,7 @@ class OdkxLocalTable(object):
             c.execute(qry)
         df.to_sql(staging_tn, schema=self.schema, if_exists='append', index=False, con=self.engine)
         self.resetColumns(staging_tn, missing_cols, external_id_column)
-        self.localSyncFromStagingTable(source_prefix, external_id_column)
+        self.localSyncFromStagingTable(source_prefix, external_id_column, localSyncMode)
 
     def hasPendingLocalChanges(self, source_prefix: str):
         def_tn = self.tableId + '_' + source_prefix
