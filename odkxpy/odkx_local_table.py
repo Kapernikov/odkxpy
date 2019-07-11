@@ -458,7 +458,7 @@ class OdkxLocalTable(object):
                         "savepointCreator"='localSync', 
                         "savepointType"='COMPLETE',
                         "formId"='localSync',
-                        "lastUpdateUser"='localSync',
+                        "lastUpdateUser"='localSync'
                         where state in ('new', 'modified')""".format(schema=self.schema, stagingtable=staging_tn))
             c.execute("""update {schema}."{stagingtable}" set "dataETagAtModification"='{etag}' where state in ('new', 'modified')""".format(schema=self.schema, stagingtable=staging_tn, etag=self.getLocalDataETag()))
 
