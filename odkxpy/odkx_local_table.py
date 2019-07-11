@@ -380,6 +380,24 @@ class OdkxLocalTable(object):
             c.execute(qry)
 
     def localSyncFromDataframe(self, source_prefix: str, external_id_column: str, df: pd.DataFrame):
+        """
+        to sync changes from a dataframe:
+          * first do initializeExternalSource
+          * then do this function, with the same prefix. give a UNIQUE column as external_id (if you use the odkx ID then just pass 'id')
+          * then do sync with the remote table and give the external source prefix as a parameter
+
+        this will stage changes for syncing from the given database. note that every column missing from the database will NOT BE TOUCHED
+        (it uses resetColumns to reset all columns that were not in the dataframe).
+
+
+        note that if you didn't sync up the pending changes and you want to re-do the local sync, you must resetLocalChanges first (a localSync
+        won't work when there are already changes pending)
+
+        :param source_prefix: the prefix of the externalSource
+        :param external_id_column:
+        :param df:
+        :return:
+        """
         staging_tn = self.tableId + '_' + source_prefix + '_staging'
         hash_cols = self._getHashedColumns(staging_tn)
         missing_cols = [x for x in hash_cols if not x in list(df)]
