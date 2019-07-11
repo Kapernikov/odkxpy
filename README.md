@@ -12,9 +12,6 @@ Python API for accessing ODK-X. Support local sync to a SQL database
 * it doesn't do the synchronizing in one single database transaction, so a
   crash while syncing could sometimes require manual recovery
 
-# Screenshot
-
-![Example screenshot](docs/example.png)
 
 # Getting data from the server (using REST)
 
