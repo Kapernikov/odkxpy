@@ -16,11 +16,15 @@ class LocalSyncMode(Enum):
     ONLY_EXISTING_RECORDS = 3
 
 class FilesystemAttachmentStore(object):
-    def __init__(self, path):
+    def __init__(self, path, useWindowsPaths: bool = False):
         self.path = path
+        self.useWindowsPaths = useWindowsPaths
 
     def getFileName(self, id, filename):
-        return os.path.join(self.path, id, filename)
+        xid = id
+        if self.useWindowsPaths:
+            xid = id.replace(":","")
+        return os.path.join(self.path, xid, filename)
 
     def hasFile(self, id, filename):
         return os.path.isfile(self.getFileName(id, filename))
@@ -48,10 +52,11 @@ class FilesystemAttachmentStore(object):
 
 
 class OdkxLocalTable(object):
-    def __init__(self, tableId: str, engine: sqlalchemy.engine.Engine, schema: str, attachment_store_path: Optional[str]=None):
+    def __init__(self, tableId: str, engine: sqlalchemy.engine.Engine, schema: str, attachment_store_path: Optional[str]=None, useWindowsCompatiblePaths: bool = False):
         self.tableId = tableId
+
         self.schema = schema
-        self.attachments = FilesystemAttachmentStore(os.getcwd() if attachment_store_path is None else attachment_store_path)
+        self.attachments = FilesystemAttachmentStore(os.getcwd() if attachment_store_path is None else attachment_store_path, useWindowsPaths=useWindowsCompatiblePaths)
         self.engine: sqlalchemy.engine.Engine = engine
 
     def getLocalDataETag(self):
