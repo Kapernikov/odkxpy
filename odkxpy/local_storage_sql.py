@@ -5,16 +5,17 @@ from typing import Optional, List
 import os
 
 class SqlLocalStorage(object):
-    def __init__(self, engine: sqlalchemy.engine.Engine, schema: str, file_storage_root: str):
+    def __init__(self, engine: sqlalchemy.engine.Engine, schema: str, file_storage_root: str, useWindowsCompatiblePaths: bool = False):
         self.engine = engine
         self.schema = schema
         self.file_storage_root = file_storage_root
+        self.useWindowsCompatiblePaths = useWindowsCompatiblePaths
 
     def getLocalTable(self, server_table: OdkxServerTable) -> OdkxLocalTable:
         filestore = os.path.join(self.file_storage_root, server_table.tableId)
         os.makedirs(filestore, exist_ok=True)
         self.initializeLocalStorage(server_table)
-        return OdkxLocalTable(server_table.tableId, self.engine, self.schema, filestore)
+        return OdkxLocalTable(server_table.tableId, self.engine, self.schema, filestore, useWindowsCompatiblePaths=self.useWindowsCompatiblePaths)
 
     def initializeLocalStorage(self, server_table: OdkxServerTable):
         self._createLocalTable(server_table, log_table=False, create_state_col=True)
