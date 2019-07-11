@@ -13,6 +13,7 @@ from enum import Enum
 class LocalSyncMode(Enum):
     FULL = 1
     ONLY_NEW_RECORDS = 2
+    ONLY_EXISTING_RECORDS = 3
 
 class FilesystemAttachmentStore(object):
     def __init__(self, path):
@@ -516,6 +517,8 @@ class OdkxLocalTable(object):
             w = ""
             if localSyncMode == LocalSyncMode.ONLY_NEW_RECORDS:
                 w = " WHERE state in ('new') "
+            if localSyncMode == LocalSyncMode.ONLY_EXISTING_RECORDS:
+                w = " WHERE state in ('modified') "
             c.execute("""delete from {schema}."{def_tn}" where {schema}."{def_tn}".id in (select {schema}."{stagingtable}".id from {schema}."{stagingtable}" {w}) 
             """.format(schema=self.schema, def_tn=def_tn, stagingtable=staging_tn, w=w))
         self._copyMissingData(staging_tn, def_tn)
