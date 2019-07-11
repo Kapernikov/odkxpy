@@ -41,7 +41,10 @@ class FilesystemAttachmentStore(object):
 
     def storeFile(self, id, filename, response: requests.Response):
         target = self.getFileName(id, filename)
-        os.makedirs(os.path.join(self.path, id),exist_ok=True)
+        xid = id
+        if self.useWindowsPaths:
+            xid = id.replace(":","")
+        os.makedirs(os.path.join(self.path, xid),exist_ok=True)
         with open(target + '-tmp', 'wb') as out_file:
             for chunk in response.iter_content(1024):
                 out_file.write(chunk)
