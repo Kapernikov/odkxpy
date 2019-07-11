@@ -2,12 +2,15 @@
 
 Python API for accessing ODK-X. Support local sync to a SQL database
 
-# Caveats
+# Caveats/Known problems
 
 * only supports PostgreSQL for now (makes use of queries using UPDATE...FROM syntax)
   need to fix this by switching to sqlalchemy core
 
 * does not support uploading attachments yet (only downloading).
+
+* it doesn't do the synchronizing in one single database transaction, so a
+  crash while syncing could sometimes require manual recovery
 
 # Screenshot
 
@@ -61,3 +64,8 @@ first_table_local.localSyncFromDataframe('my_calculation', 'my_id',df, odkxpy.Lo
 
 first_table_local.sync(first_table, "my_calculation")
 ```
+
+# Authors
+
+Frank Dekervel
+Ludovic Santos
