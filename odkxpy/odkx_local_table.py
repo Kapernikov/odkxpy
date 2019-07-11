@@ -364,7 +364,7 @@ class OdkxLocalTable(object):
         warning: external_id needs to be a UNIQUE field!
         """
         col_expr = ",".join([
-            """{schema}."{tn}"."{c}" = {schema}."{master}"."{c}" """.format(schema=self.schema, tn=table, master=self.tableId, c=x)
+            """"{c}" = {schema}."{master}"."{c}" """.format(schema=self.schema, tn=table, master=self.tableId, c=x)
             for x in col_list])
 
         qry = """
