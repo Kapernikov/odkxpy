@@ -321,12 +321,18 @@ class OdkxLocalTable(object):
         meta.reflect(self.engine, schema=self.schema, only=[tablename])
         return meta.tables.get(self.schema+ '.' + tablename)
 
-    def fillHashColumn(self, table_name):
+
+    def _getHashedColumns(self, table_name):
         tm = self._getTableMeta(table_name)
-        exclude_columns = ['hash','state', 'dataETagAtModification', 'formId', 'rowETag', 'savepointTimestamp', 'savepointCreator',
-                           'createUser','lastUpdateUser','locale','savepointType']
+        exclude_columns = ['hash', 'state', 'dataETagAtModification', 'formId', 'rowETag', 'savepointTimestamp',
+                           'savepointCreator',
+                           'createUser', 'lastUpdateUser', 'locale', 'savepointType']
         columns_to_hash = [x.name for x in tm.columns
                            if not x.name in exclude_columns]
+        return columns_to_hash
+
+    def fillHashColumn(self, table_name):
+        columns_to_hash = self._getHashedColumns(table_name)
         qry = """UPDATE {schema}.{table} set hash=md5(ROW({cols})::TEXT)""".format(
             schema=self.schema,
             table=table_name,
@@ -353,13 +359,35 @@ class OdkxLocalTable(object):
         with self.engine.begin() as c:
             c.execute(qry)
 
+    def resetColumns(self, table: str, col_list: List[str],external_id: str):
+        """ reset the given columns in this table from the latest version (eg you blanked them and you don't want the blanked version to be uploaded)
+        warning: external_id needs to be a UNIQUE field!
+        """
+        col_expr = ",".join([
+            """{schema}."{tn}"."{c}" = {schema}."{master}"."{c}" """.format(schema=self.schema, tn=table, master=self.tableId, c=x)
+            for x in col_list])
+
+        qry = """
+            UPDATE {schema}."{tn}" set {col_expr} FROM {schema}."{master}" WHERE {schema}."{tn}"."{extid}" = {schema}."{master}"."{extid}"
+        """.format(
+            schema=self.schema,
+            master = self.tableId,
+            tn = table,
+            extid = external_id,
+            col_expr = col_expr
+        )
+        with self.engine.begin() as c:
+            c.execute(qry)
 
     def localSyncFromDataframe(self, source_prefix: str, external_id_column: str, df: pd.DataFrame):
         staging_tn = self.tableId + '_' + source_prefix + '_staging'
+        hash_cols = self._getHashedColumns(staging_tn)
+        missing_cols = [x for x in hash_cols if not x in list(df)]
         qry = """DELETE FROM {schema}."{tn}" """.format(schema=self.schema, tn=staging_tn)
         with self.engine.begin() as c:
             c.execute(qry)
         df.to_sql(staging_tn, schema=self.schema, if_exists='append', index=False, con=self.engine)
+        self.resetColumns(staging_tn, missing_cols, external_id_column)
         self.localSyncFromStagingTable(source_prefix, external_id_column)
 
     def hasPendingLocalChanges(self, source_prefix: str):
