@@ -177,7 +177,7 @@ class OdkxLocalTable(object):
                 stagingtable=self.tableId+'_staging'
             ))
 
-    def _sync_iter_pull(self, remoteTable: OdkxServerTable):
+    def _sync_iter_pull(self, remoteTable: OdkxServerTable, no_attachments: bool = False):
         if remoteTable.getdataETag() == self.getLocalDataETag():
             ## we still need to check if we need to download attachments
             self._sync_pull_attachments(remoteTable)
@@ -206,7 +206,8 @@ class OdkxLocalTable(object):
                 schema=self.schema, table=self.tableId, stagingtable=self.tableId+'_staging', fields=fields, fields_v=fields_v
             ))
         self._staging_to_log()
-        self._sync_pull_attachments(remoteTable)
+        if not no_attachments:
+            self._sync_pull_attachments(remoteTable)
         self.updateLocalStatusDb(new_etag)
         return True
 
@@ -274,7 +275,15 @@ class OdkxLocalTable(object):
                 result[k] = row[k]
         return result
 
-    def sync(self, remoteTable: OdkxServerTable, local_changes_prefix: Optional[str] = None, force_push: bool = False):
+    def sync(self, remoteTable: OdkxServerTable, local_changes_prefix: Optional[str] = None, force_push: bool = False, no_attachments: bool = False):
+        """
+
+        :param remoteTable: the OdkxServerTable you want to sync with
+        :param local_changes_prefix: the prefix of the local changes to push (when left empty , it will not push, only pull)
+        :param force_push: if the server has more recent changes than our local changes, push anyway, overwriting the changes on the server
+        :param no_attachments: ignore the attachments for now (the rows will remain in sync_attachments state, so they will be synced next time when you don't pass no_attachments)
+        :return:
+        """
         self._sync_iter_pull(remoteTable)
         definition = remoteTable.getTableDefinition()
         id_list_good = []
@@ -317,7 +326,7 @@ class OdkxLocalTable(object):
                 )
                 with self.engine.begin() as c:
                     c.execute(qry)
-            self._sync_iter_pull(remoteTable)
+            self._sync_iter_pull(remoteTable, no_attachments=no_attachments)
             return rs
 
 
