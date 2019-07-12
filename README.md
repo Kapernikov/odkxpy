@@ -9,10 +9,6 @@ Python API for accessing ODK-X. Support local sync to a SQL database
 
 * does not support uploading attachments yet (only downloading).
 
-* it doesn't do the synchronizing in one single database transaction, so a
-  crash while syncing could sometimes require manual recovery
-
-
 # Getting data from the server (using REST)
 
 ```python

@@ -86,12 +86,16 @@ class OdkxLocalTable(object):
         return meta.tables.get(self.schema+ '.' + self.tableId)
 
 
-    def updateLocalStatusDb(self, dataETag):
+    def updateLocalStatusDb(self, dataETag, transaction: sqlalchemy.engine.Connection=None):
         sql = f"""INSERT INTO {self.schema}.status_table ("table_name", "dataETag", "sync_date")
                  VALUES ('{self.tableId}', '{dataETag}', '{str(datetime.datetime.now())}')"""
-        logging.info("SQL request:\n"+sql)
-        with self.engine.connect() as con:
-            con.execute(sql)
+        def _do(trans):
+            trans.execute(sql)
+        if transaction is not None:
+            _do(transaction)
+        else:
+            with self.engine.begin() as con:
+                con.execute(sql)
 
 
     def row_asdict(self, r: OdkxServerTableRow):
@@ -168,17 +172,22 @@ class OdkxLocalTable(object):
                     c.execute(sqlalchemy.sql.text("update {schema}.{table} set state='synced' where id=:rowid".format(
                         schema=self.schema, table=self.tableId)), rowid=id)
 
-    def _staging_to_log(self):
+    def _staging_to_log(self, transaction: sqlalchemy.engine.Connection = None):
         st = self._getStagingTable()
         colnames = [x.name for x in st.columns]
         fields = ','.join(['"{colname}"'.format(colname=colname) for colname in colnames])
-        with self.engine.begin() as trans:
+        def _do(trans):
             trans.execute("insert into {schema}.{logtable} ({fields}) select {fields} from {schema}.{stagingtable}".format(
                 schema= self.schema,
                 logtable=self.tableId+'_log',
                 fields=fields,
                 stagingtable=self.tableId+'_staging'
             ))
+        if transaction is not None:
+            _do(transaction)
+        else:
+            with self.engine.begin() as trans:
+                _do(trans)
 
     def _sync_iter_pull(self, remoteTable: OdkxServerTable, no_attachments: bool = False):
         if remoteTable.getdataETag() == self.getLocalDataETag():
@@ -208,15 +217,11 @@ class OdkxLocalTable(object):
             """.format(
                 schema=self.schema, table=self.tableId, stagingtable=self.tableId+'_staging', fields=fields, fields_v=fields_v
             ))
-        self._staging_to_log()
+            self._staging_to_log(trans)
+            self.updateLocalStatusDb(new_etag, trans)
         if not no_attachments:
             self._sync_pull_attachments(remoteTable)
-        self.updateLocalStatusDb(new_etag)
         return True
-
-    def _sync_push(self, remoteTable: OdkxServerTable, rows: List[OdkxServerTableRow]):
-        if remoteTable.getdataETag() != self.getLocalDataETag():
-            raise Exception("please pull first")
 
 
     def _qryState(self, local_changes_prefix: str, tableDefinition: List[OdkxServerColumnDefinition], state: List[str], force_push: bool):
