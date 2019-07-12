@@ -48,9 +48,6 @@ class OdkxServerTableRow(NamedTuple):
     filterScope: RowFilterScope
 
 
-
-
-
 class OdkxServerColumnDefinition(object):
     def __init__(self, elementKey=None, elementName=None, elementType=None, childElements: list = [], parentElement=None):
         if elementKey is None:
@@ -96,6 +93,7 @@ class OdkxServerColumnDefinition(object):
             rpr += '\n\t{k}={v}'.format(k=p, v=sv)
         return rpr
 
+
 class OdkxServerTableDefinition():
     """
     getTableDefintion result
@@ -114,7 +112,8 @@ class OdkxServerTableDefinition():
         json = {}
         json["schemaETag"] = str(self.schemaETag)
         json["tableId"] = self.tableId
-        json["orderedColumns"] = [obj._serialization_helper() for obj in self.columns]
+        json["orderedColumns"] = [obj._serialization_helper()
+                                  for obj in self.columns]
         return json
 
     @classmethod
@@ -122,16 +121,13 @@ class OdkxServerTableDefinition():
         cols = None
         if isinstance(obj, OdkxServerTable):
             return obj.getTableDefinition()
-
         elif isinstance(obj, dict):
             return cls._from_cache(obj)
-
+        
         raise ValueError("could not extract def from {}".format(str(obj)))
 
-   
-        
     @classmethod
-    def TableDefinitionOf(cls, odx_table: Union[dict, "OdkxServerTable"])-> "OdkxServerTableDefinition":
+    def tableDefinitionOf(cls, odx_table: Union[dict, "OdkxServerTable"]) -> "OdkxServerTableDefinition":
         return cls._extract(odx_table)
 
     @classmethod
@@ -157,7 +153,7 @@ class OdkxServerTableDefinition():
         deflist = [cols[x["elementKey"]] for x in obj["orderedColumns"]]
 
         return OdkxServerTableDefinition(obj["tableId"], obj["schemaETag"], deflist)
-   
+
 
 # OdkxServerTableDefinition = namedtuple('OdkxServerTableDefinition', [
 #     'schemaETag', 'tableId', 'orderedColumns', 'selfUri', 'tableUri'
@@ -203,7 +199,7 @@ class OdkxServerTable(object):
     def getTableRoot(self):
         return "tables/" + self.tableId + "/ref/" + self.schemaETag
 
-    def getTableDefinition(self) -> List[OdkxServerColumnDefinition]:
+    def getTableDefinition(self) -> OdkxServerTableDefinition:
         t_d = self.connection.GET(self.getTableRoot())
         col_props = [x for x in self.connection.GET(
             "tables/" + self.tableId + "/properties/2") if x['partition'] == 'Column']
@@ -228,7 +224,7 @@ class OdkxServerTable(object):
                 cols[c].parentElement = parent
                 parent.childElements.append(cols[c])
         deflist = [cols[x['elementKey']] for x in t_d['orderedColumns']]
-        
+
         return OdkxServerTableDefinition(etag, t_id, deflist)
 
     # def setTableDefinition(self, json):

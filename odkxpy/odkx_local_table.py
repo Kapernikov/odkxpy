@@ -147,7 +147,7 @@ class OdkxLocalTable(object):
 
 
     def _sync_pull_attachments(self, remoteTable: OdkxServerTable):
-        attach_cols = [x.elementKey for x in remoteTable.getTableDefinition() if x.elementType == 'rowpath']
+        attach_cols = [x.elementKey for x in remoteTable.getTableDefinition().columns if x.elementType == 'rowpath']
         if len(attach_cols) == 0:
             return
         ids = []
@@ -288,7 +288,7 @@ class OdkxLocalTable(object):
         :return:
         """
         self._sync_iter_pull(remoteTable)
-        definition = remoteTable.getTableDefinition()
+        definition = remoteTable.getTableDefinition().columns
         id_list_good = []
         id_list_conflict = []
         if local_changes_prefix is not None:
