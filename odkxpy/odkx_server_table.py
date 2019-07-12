@@ -1,29 +1,35 @@
+from .odkx_server_file import OdkxServerFile
 import json
 from collections import namedtuple
 from .odkx_connection import OdkxConnection
 import datetime
 import logging
-from typing import List, Generator, NamedTuple
+from typing import List, Generator, NamedTuple, Union
 
 OdkxServerTableInfo = namedtuple('OdkxServerTableInfo', [
-        'tableId', 'dataETag', 'schemaETag', 'selfUri', 'definitionUri', 'dataUri', 'instanceFilesUri', 'diffUri', 'aclUri', 'tableLevelManifestETag'
+    'tableId', 'dataETag', 'schemaETag', 'selfUri', 'definitionUri', 'dataUri', 'instanceFilesUri', 'diffUri', 'aclUri', 'tableLevelManifestETag'
 ])
 
-OdkxServerTableInfo.__new__.__defaults__ = (None, ) * len(OdkxServerTableInfo._fields)
+OdkxServerTableInfo.__new__.__defaults__ = (
+    None, ) * len(OdkxServerTableInfo._fields)
 
 
 OdkxServerTableRowset = namedtuple('OdkxServerTableRowset',
-                                   ['rows', 'dataETag', 'tableUri', 'webSafeRefetchCursor', 'webSafeBackwardCursor', 'webSafeResumeCursor', 'hasMoreResults', 'hasPriorResults']
+                                   ['rows', 'dataETag', 'tableUri', 'webSafeRefetchCursor', 'webSafeBackwardCursor',
+                                       'webSafeResumeCursor', 'hasMoreResults', 'hasPriorResults']
                                    )
 
-OdkxServerTableColumn = namedtuple('OdkxServerTableColumn', ['column', 'value'])
+OdkxServerTableColumn = namedtuple(
+    'OdkxServerTableColumn', ['column', 'value'])
+
 
 class RowFilterScope(NamedTuple):
-    defaultAccess: str ## FULL, MODIFY, READ_ONLY, HIDDEN,
+    defaultAccess: str  # FULL, MODIFY, READ_ONLY, HIDDEN,
     rowOwner: str
     groupReadOnly: str
     groupModify: str
     groupPrivileged: str
+
 
 class OdkxServerTableRow(NamedTuple):
     rowETag: str
@@ -43,8 +49,13 @@ class OdkxServerTableRow(NamedTuple):
 
 
 
+
+
 class OdkxServerColumnDefinition(object):
-    def __init__(self, elementKey=None, elementName = None, elementType= None, childElements=None, parentElement=None):
+    def __init__(self, elementKey=None, elementName=None, elementType=None, childElements: list = [], parentElement=None):
+        if elementKey is None:
+            raise ValueError("elementKey can not be None")
+
         self.elementKey = elementKey
         self.elementName = elementName
         self.elementType = elementType
@@ -65,9 +76,19 @@ class OdkxServerColumnDefinition(object):
                 return False
         return True
 
+    def _serialization_helper(self):
+        return {
+            "elementKey": self.elementKey,
+            "elementName": self.elementName,
+            "elementType": self.elementType,
+            "properties": self.properties,
+            "listChildElementKeys": [child.elementKey for child in self.childElements]
+        }
+
     def __repr__(self):
-        rpr =   (' - ' if self.parentElement is not None else '') + 'OdkxServerColumnDefinition' + \
-                ('*' if self.isMaterialized() else '') + '(' + self.elementKey + ':' + self.elementType + ')'
+        rpr = (' - ' if self.parentElement is not None else '') + 'OdkxServerColumnDefinition' + \
+            ('*' if self.isMaterialized() else '') + \
+            '(' + self.elementKey + ':' + self.elementType + ')'
         for p in self.properties.keys():
             sv = str(self.properties[p])
             if len(sv) > 40:
@@ -75,14 +96,72 @@ class OdkxServerColumnDefinition(object):
             rpr += '\n\t{k}={v}'.format(k=p, v=sv)
         return rpr
 
+class OdkxServerTableDefinition():
+    """
+    getTableDefintion result
+    """
 
-OdkxServerTableDefinition = namedtuple('OdkxServerTableDefinition', [
-    'schemaETag', 'tableId', 'orderedColumns', 'selfUri', 'tableUri'
-])
+    def __init__(self,  schemaETag: str, tableId: str, columns: List[OdkxServerColumnDefinition]):
+        self.schemaETag = schemaETag
+        self.tableId = tableId
+        self.columns = columns
 
+    def _asdict(self):
+        """
+        dict for serialization
+        """
 
+        json = {}
+        json["schemaETag"] = str(self.schemaETag)
+        json["tableId"] = self.tableId
+        json["orderedColumns"] = [obj._serialization_helper() for obj in self.columns]
+        return json
 
-from .odkx_server_file import OdkxServerFile
+    @classmethod
+    def _extract(cls, obj) -> "OdkxServerTableDefinition":
+        cols = None
+        if isinstance(obj, OdkxServerTable):
+            return obj.getTableDefinition()
+
+        elif isinstance(obj, dict):
+            return cls._from_cache(obj)
+
+        raise ValueError("could not extract def from {}".format(str(obj)))
+
+   
+        
+    @classmethod
+    def TableDefinitionOf(cls, odx_table: Union[dict, "OdkxServerTable"])-> "OdkxServerTableDefinition":
+        return cls._extract(odx_table)
+
+    @classmethod
+    def _from_cache(cls, obj) -> "OdkxServerTableDefinition":
+        cols = {}
+        for c in obj["orderedColumns"]:
+            dd = {}
+            dd.update(c)
+            del dd['listChildElementKeys']
+            cd_props = dd.pop('properties')
+            cd = OdkxServerColumnDefinition(**dd)
+            cd.properties = cd_props
+
+            cols[cd.elementKey] = cd
+
+        for c in obj['orderedColumns']:
+            children = c['listChildElementKeys']
+            parent = cols[c['elementKey']]
+            for c in children:
+                cols[c].parentElement = parent
+                parent.childElements.append(cols[c])
+
+        deflist = [cols[x["elementKey"]] for x in obj["orderedColumns"]]
+
+        return OdkxServerTableDefinition(obj["tableId"], obj["schemaETag"], deflist)
+   
+
+# OdkxServerTableDefinition = namedtuple('OdkxServerTableDefinition', [
+#     'schemaETag', 'tableId', 'orderedColumns', 'selfUri', 'tableUri'
+# ])
 
 
 class OdkxServerTable(object):
@@ -90,6 +169,7 @@ class OdkxServerTable(object):
     wrapper around the ODKX sync endpoint rest API for one specific table.
     to get a table, use OdkxServerMeta
     """
+
     def __init__(self, con: OdkxConnection, tableId: str, schemaETag: str):
         self.connection = con
         self.tableId = tableId
@@ -125,8 +205,10 @@ class OdkxServerTable(object):
 
     def getTableDefinition(self) -> List[OdkxServerColumnDefinition]:
         t_d = self.connection.GET(self.getTableRoot())
-        col_props = [ x for x in self.connection.GET("tables/" + self.tableId + "/properties/2") if x['partition'] == 'Column']
-
+        col_props = [x for x in self.connection.GET(
+            "tables/" + self.tableId + "/properties/2") if x['partition'] == 'Column']
+        etag = t_d["schemaETag"]
+        t_id = self.tableId
 
         cols = {}
         for c in t_d['orderedColumns']:
@@ -145,10 +227,11 @@ class OdkxServerTable(object):
             for c in children:
                 cols[c].parentElement = parent
                 parent.childElements.append(cols[c])
-        return [cols[x['elementKey']] for x in t_d['orderedColumns']]
+        deflist = [cols[x['elementKey']] for x in t_d['orderedColumns']]
+        
+        return OdkxServerTableDefinition(etag, t_id, deflist)
 
-
-    #def setTableDefinition(self, json):
+    # def setTableDefinition(self, json):
     #    return self.connection.PUT(self.getTableRoot(), json)
 
     def deleteTable(self, are_you_sure: bool):
@@ -158,13 +241,11 @@ class OdkxServerTable(object):
             raise Exception("not sure ?")
         return self.connection.DELETE(self.getTableRoot())
 
-
     def getTableProperties(self):
         return self.connection.GET('tables/' + self.tableId + "/properties/2")
 
     def putJsonTableProperties(self, json):
         return self.connection.PUT('tables/' + self.tableId + "/properties/2", json)
-
 
     def getTableAcl(self):
         return self.connection.GET('tables/' + self.tableId + '/acl')
@@ -176,13 +257,14 @@ class OdkxServerTable(object):
 
     def _parse_row(self, r):
         def rw(x):
-            x['orderedColumns'] = [OdkxServerTableColumn(**z) for z in x['orderedColumns']]
+            x['orderedColumns'] = [OdkxServerTableColumn(
+                **z) for z in x['orderedColumns']]
             fs = x['filterScope']
             x['filterScope'] = RowFilterScope(**fs)
             return x
         return OdkxServerTableRow(**rw(r))
 
-    def _generator_rowset(self, l) -> Generator[OdkxServerTableRowset,None,None]:
+    def _generator_rowset(self, l) -> Generator[OdkxServerTableRowset, None, None]:
         hasmore = True
         cursor = None
         while hasmore:
@@ -191,17 +273,17 @@ class OdkxServerTable(object):
             cursor = rs.webSafeResumeCursor
             yield rs
 
-
-    def getDiffGenerator(self, dataETag=None, fetchLimit=None) -> Generator[OdkxServerTableRowset,None,None]:
+    def getDiffGenerator(self, dataETag=None, fetchLimit=None) -> Generator[OdkxServerTableRowset, None, None]:
         return self._generator_rowset(
             lambda z_cursor: self.getDiff(dataETag=dataETag, cursor=z_cursor, fetchLimit=fetchLimit))
 
     def getDiff(self, dataETag=None, cursor=None, fetchLimit=None) -> OdkxServerTableRowset:
-        params = {'data_etag': dataETag, 'cursor': cursor, 'fetchLimit': fetchLimit}
+        params = {'data_etag': dataETag,
+                  'cursor': cursor, 'fetchLimit': fetchLimit}
         r = self.connection.GET(self.getTableRoot() + "/diff", params)
         return self._parse_rowset(r)
 
-    def getAllDataRowsGenerator(self, fetchLimit=None) -> Generator[OdkxServerTableRowset,None,None]:
+    def getAllDataRowsGenerator(self, fetchLimit=None) -> Generator[OdkxServerTableRowset, None, None]:
         return self._generator_rowset(
             lambda z_cursor: self.getAllDataRows(cursor=z_cursor, fetchLimit=fetchLimit))
 
@@ -209,19 +291,17 @@ class OdkxServerTable(object):
         params = {'cursor': cursor, 'fetchLimit': fetchLimit}
         return self._parse_rowset(self.connection.GET(self.getTableRoot() + "/rows", params))
 
-
-
     def getChangesets(self, dataETag=None, sequence_value=None):
         # Not working - Problem API ?
-        ## todo refactor after ludovic explains me
+        # todo refactor after ludovic explains me
         params = {'data_etag': dataETag, 'sequence_value': sequence_value}
         return self.connection.GET(self.getTableRoot() + "/diff/changeSets", params)
 
     def getChangesetRows(self, dataETag, cursor=None, fetchLimit=None, active_only=None):
-        ## todo refactor after ludovic explains me
-        params = {'active_only': active_only, 'cursor': cursor, 'fetchLimit': fetchLimit}
+        # todo refactor after ludovic explains me
+        params = {'active_only': active_only,
+                  'cursor': cursor, 'fetchLimit': fetchLimit}
         return self.connection.GET(self.getTableRoot() + "/diff/changeSets/" + dataETag, params)
-
 
     def getDataRow(self, rowId, raw=False):
         r = self.connection.GET(self.getTableRoot() + "/rows/" + rowId)
@@ -232,20 +312,22 @@ class OdkxServerTable(object):
     def getAttachmentsManifest(self, rowId):
         return [OdkxServerFile(**d) for d in self.connection.GET(self.getTableRoot() + "/attachments/" + rowId + "/manifest")['files']]
 
-    #### I GOT HERE REFACTORING
+    # I GOT HERE REFACTORING
 
     def getAttachment(self, rowId, name, stream, timeout):
         return self.connection.session.get(
-            self.connection.server + self.connection.appID + '/' + self.getTableRoot() + "/attachments/" + rowId + "/file/" + name,
+            self.connection.server + self.connection.appID + '/' +
+            self.getTableRoot() + "/attachments/" + rowId + "/file/" + name,
             stream=stream, timeout=timeout)
 
     def getAttachments(self, rowId, data):
         # Not working - TODO
-        ## @ludovic i think this is probably setAttachments ? @TODO
+        # @ludovic i think this is probably setAttachments ? @TODO
         headers = {"Content-Type": "application/json"}
         payload = json.dumps(data)
         return self.session.post(
-            self.server + self.appID + '/' + self.getTableRoot() + "/attachments/" + rowId + "/download",
+            self.server + self.appID + '/' + self.getTableRoot() + "/attachments/" +
+            rowId + "/download",
             headers=headers, data=payload)
 
     def alterDataRows(self, json):
@@ -259,18 +341,18 @@ class OdkxServerTable(object):
         for key, item in kwargs.items():
             orderedColumns.append({'column': key, 'value': item})
         json = {'rows':
-            [{
-                'rowETag': None,
-                'dataETagAtModification': None,
-                'deleted': False,
-                'createUser': self.user,
-                'lastUpdateUser': self.user,
-                'formId': formId,
-                'savepointTimestamp': str(datetime.datetime.now()),
-                'savepointCreator': self.user,
-                'orderedColumns': orderedColumns
-            }],
-            'dataETag': dataETag}
+                [{
+                    'rowETag': None,
+                    'dataETagAtModification': None,
+                    'deleted': False,
+                    'createUser': self.user,
+                    'lastUpdateUser': self.user,
+                    'formId': formId,
+                    'savepointTimestamp': str(datetime.datetime.now()),
+                    'savepointCreator': self.user,
+                    'orderedColumns': orderedColumns
+                }],
+                'dataETag': dataETag}
         output = self.alterDataRows(json)
         return output
 
@@ -392,7 +474,8 @@ class OdkxServerTable(object):
         if dataETag == dataETagLocal:
             logging.info("same dataETag: " + dataETag)
             return True
-        logging.info("different dataETag: " + str(dataETag) + ', ' + dataETagLocal)
+        logging.info("different dataETag: " +
+                     str(dataETag) + ', ' + dataETagLocal)
         return False
 
     def getAllResults(self, mode, dataETag=None):
@@ -406,7 +489,8 @@ class OdkxServerTable(object):
         while notFinished:
             logging.info("more rows ...")
             if mode == 'AllDataChanges':
-                moreRes = self.getAllDataChanges(dataETag=dataETag, cursor=cursor)
+                moreRes = self.getAllDataChanges(
+                    dataETag=dataETag, cursor=cursor)
             elif mode == 'AllDataRows':
                 moreRes = self.getAllDataRows(cursor=cursor)
             notFinished = moreRes['hasMoreResults']
