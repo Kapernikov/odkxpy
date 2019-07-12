@@ -49,6 +49,9 @@ class SqlLocalStorage(object):
 
 
     def _cache_table_defintion(self, table_defintion: OdkxServerTableDefinition):
+        """
+        cache latest seen combination tableID, schemaETag
+        """
         table = self._create_cache(False)
     
         # sql = f"""INSERT INTO {self.schema}.{self.chache_table_name} ("tableId", "schemaETag", "odkxpydef")
@@ -61,13 +64,29 @@ class SqlLocalStorage(object):
                 table.select(),
                 tableId=table_defintion.tableId
             )
-            if not result.fetchone():
+            previous = result.fetchone()
+            
+            if not previous:
                 c.execute(
                     table.insert(),
                     tableId=table_defintion.tableId,
                     schemaETag=table_defintion.schemaETag,
                     odkxpydef=table_defintion._asdict()
                 )
+            else:
+                if previous["schemaETag"] != table_defintion.schemaETag:
+                    c.execute(
+                        table.delete(),
+                        tableId=previous["tableId"],
+                        schemaETag=previous["schemaETag"]
+                       
+                    )
+                    c.execute(
+                         table.insert(),
+                        tableId=table_defintion.tableId,
+                        schemaETag=table_defintion.schemaETag,
+                        odkxpydef=table_defintion._asdict()
+                    )
 
     def getCachedLocalTable(self, tableId: str) -> OdkxLocalTable:
         table = self._create_cache()
@@ -83,7 +102,7 @@ class SqlLocalStorage(object):
         # code duplication initializeLocalStorage, since we don't have a OdkxServerTable only a def and id
         filestore = os.path.join(self.file_storage_root, tableId)
         os.makedirs(filestore, exist_ok=True)
-        self._cache_table_defintion(tabledef)
+
         self._createLocalTable(tabledef, log_table=False,
                                create_state_col=True)
         self._createLocalTable(tabledef, log_table=True)
