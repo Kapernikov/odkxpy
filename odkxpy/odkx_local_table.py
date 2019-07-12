@@ -230,7 +230,7 @@ class OdkxLocalTable(object):
         locChangesCols = [x.name for x in locChanges.columns]
         locTableCols = [x.name for x in locTable.columns]
         colsTakeLocally = [x.elementKey for x in tableDefinition if x.isMaterialized()] \
-                          + ['id', 'rowETag', 'savepointTimestamp', 'dataETagAtModification']
+                          + ['id', 'rowETag', 'savepointTimestamp', 'dataETagAtModification', 'savepointCreator', 'formId','savepointType', 'lastUpdateUser']
         if force_push:
             # take row ETag directly from server, making push always work even if we updated old data
             # it can still conflict but now only because somebody uploaded between us pulling and us pushing
