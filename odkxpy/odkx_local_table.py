@@ -1,5 +1,5 @@
 import sqlalchemy
-from .odkx_server_table import OdkxServerTable, OdkxServerTableRow, OdkxServerTableColumn, OdkxServerColumnDefinition
+from .odkx_server_table import OdkxServerTable, OdkxServerTableRow, OdkxServerTableColumn, OdkxServerColumnDefinition, OdkxServerTableDefinition
 from sqlalchemy import MetaData, text
 import os
 from typing import Optional, List
@@ -55,12 +55,15 @@ class FilesystemAttachmentStore(object):
 
 
 class OdkxLocalTable(object):
-    def __init__(self, tableId: str, engine: sqlalchemy.engine.Engine, schema: str, attachment_store_path: Optional[str]=None, useWindowsCompatiblePaths: bool = False):
+    def __init__(self, tableId: str, engine: sqlalchemy.engine.Engine, schema: str, attachment_store_path: Optional[str], useWindowsCompatiblePaths: bool, storage):
         self.tableId = tableId
-
+        self._storage = storage
         self.schema = schema
         self.attachments = FilesystemAttachmentStore(os.getcwd() if attachment_store_path is None else attachment_store_path, useWindowsPaths=useWindowsCompatiblePaths)
         self.engine: sqlalchemy.engine.Engine = engine
+
+    def getTableDefinition(self) -> OdkxServerTableDefinition:
+        return self._storage.getCachedTableDefinition(self.tableId)
 
     def getLocalDataETag(self):
         with self.engine.connect() as c:
@@ -185,6 +188,7 @@ class OdkxLocalTable(object):
             ## we still need to check if we need to download attachments
             self._sync_pull_attachments(remoteTable)
             return False
+        self._storage._cache_table_defintion(remoteTable.getTableDefinition())
         new_etag = self.stageAllDataChanges(remoteTable)
         st = self._getStagingTable()
         colnames = [x.name for x in st.columns]

@@ -5,6 +5,10 @@ from typing import Optional, List
 import os
 
 
+class CacheNotFoundError(Exception):
+    pass
+
+
 class SqlLocalStorage(object):
     chache_table_name = "odkxpy_cached_defintions"
 
@@ -15,14 +19,16 @@ class SqlLocalStorage(object):
         self.useWindowsCompatiblePaths = useWindowsCompatiblePaths
         self._create_cache()
 
+    def _filestore_path(self, tableId:str):
+        return os.path.join(self.file_storage_root, tableId)
+
     def getLocalTable(self, server_table: OdkxServerTable) -> OdkxLocalTable:
-        filestore = os.path.join(self.file_storage_root, server_table.tableId)
+        filestore = self._filestore_path(server_table.tableId)
         os.makedirs(filestore, exist_ok=True)
         self.initializeLocalStorage(server_table)
-        return OdkxLocalTable(server_table.tableId, self.engine, self.schema, filestore, useWindowsCompatiblePaths=self.useWindowsCompatiblePaths)
+        return OdkxLocalTable(server_table.tableId, self.engine, self.schema, filestore, useWindowsCompatiblePaths=self.useWindowsCompatiblePaths, storage=self)
 
     def _create_cache(self, create=True):
-       
 
         table_name = self.chache_table_name
 
@@ -36,24 +42,27 @@ class SqlLocalStorage(object):
 
         # except sqlalchemy.exc.NoSuchTableError:
 
-        tabledef = sqlalchemy.Table(table_name, meta, 
-            sqlalchemy.Column("tableId", sqlalchemy.types.Text(), index= True),
-            sqlalchemy.Column("schemaETag", sqlalchemy.types.Text),
-            sqlalchemy.Column("odkxpydef", sqlalchemy.types.JSON(none_as_null=False)),
-            sqlalchemy.UniqueConstraint('tableId', 'schemaETag', name='uix_1'),
-            schema=self.schema
-        )
+        tabledef = sqlalchemy.Table(table_name, meta,
+                                    sqlalchemy.Column(
+                                        "tableId", sqlalchemy.types.Text(), index=True),
+                                    sqlalchemy.Column(
+                                        "schemaETag", sqlalchemy.types.Text),
+                                    sqlalchemy.Column(
+                                        "odkxpydef", sqlalchemy.types.JSON(none_as_null=False)),
+                                    sqlalchemy.UniqueConstraint(
+                                        'tableId', 'schemaETag', name='uix_1'),
+                                    schema=self.schema
+                                    )
         if create:
             meta.create_all()
         return tabledef
-
 
     def _cache_table_defintion(self, table_defintion: OdkxServerTableDefinition):
         """
         cache latest seen combination tableID, schemaETag
         """
         table = self._create_cache(False)
-    
+
         # sql = f"""INSERT INTO {self.schema}.{self.chache_table_name} ("tableId", "schemaETag", "odkxpydef")
         #          VALUES ('{table_defintion.tableId}', '{table_defintion.schemaETag}', '{str(datetime.datetime.now())}')"""
 
@@ -65,7 +74,7 @@ class SqlLocalStorage(object):
                 tableId=table_defintion.tableId
             )
             previous = result.fetchone()
-            
+
             if not previous:
                 c.execute(
                     table.insert(),
@@ -79,39 +88,29 @@ class SqlLocalStorage(object):
                         table.delete(),
                         tableId=previous["tableId"],
                         schemaETag=previous["schemaETag"]
-                       
+
                     )
                     c.execute(
-                         table.insert(),
+                        table.insert(),
                         tableId=table_defintion.tableId,
                         schemaETag=table_defintion.schemaETag,
                         odkxpydef=table_defintion._asdict()
                     )
 
-    def getCachedLocalTable(self, tableId: str) -> OdkxLocalTable:
-        table = self._create_cache()
+    def getCachedTableDefinition(self, tableId: str) -> OdkxServerTableDefinition:
         with self.engine.connect() as c:
-            result = c.execute(
-                table.select(),
-                tableId=tableId
-            )
-            obj = dict(result.fetchall()[0])["odkxpydef"]
-        tabledef = OdkxServerTableDefinition.tableDefinitionOf(obj)
-            
+            qry = f"""select "odkxpydef" from {self.schema}.{self.chache_table_name} where "tableId" = '{tableId}'"""
+            result = c.execute(qry).fetchone()
+            if not result:
+                raise CacheNotFoundError()
 
-        # code duplication initializeLocalStorage, since we don't have a OdkxServerTable only a def and id
-        filestore = os.path.join(self.file_storage_root, tableId)
-        os.makedirs(filestore, exist_ok=True)
+        return OdkxServerTableDefinition.tableDefinitionOf(dict(result)["odkxpydef"])
 
-        self._createLocalTable(tabledef, log_table=False,
-                               create_state_col=True)
-        self._createLocalTable(tabledef, log_table=True)
-        self._createLocalTable(tabledef, log_table=True,
-                               table_name_instead=tableId + '_staging')
-        self._createStatusTable()
-        # end code duplication
-
-        return OdkxLocalTable(tableId, self.engine, self.schema, filestore, useWindowsCompatiblePaths=self.useWindowsCompatiblePaths)
+    def getCachedLocalTable(self, tableId: str) -> OdkxLocalTable:
+        # cache check
+        self.getCachedTableDefinition(tableId)
+        filestore = self._filestore_path(tableId)
+        return OdkxLocalTable(tableId, self.engine, self.schema, filestore, useWindowsCompatiblePaths=self.useWindowsCompatiblePaths, storage=self)
 
     def initializeLocalStorage(self, server_table: OdkxServerTable):
         tabledef = server_table.getTableDefinition()
