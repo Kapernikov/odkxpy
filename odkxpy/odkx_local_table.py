@@ -189,6 +189,13 @@ class OdkxLocalTable(object):
             with self.engine.begin() as trans:
                 _do(trans)
 
+    def hasIncomingChanges(self, remoteTable: OdkxServerTable) -> bool:
+        """
+        :param remoteTable:
+        :return: true if there are changes on the server that have not been downloaded yet. use the "sync" function to download these changes
+        """
+        return remoteTable.getdataETag() != self.getLocalDataETag()
+
     def _sync_iter_pull(self, remoteTable: OdkxServerTable, no_attachments: bool = False):
         if remoteTable.getdataETag() == self.getLocalDataETag():
             ## we still need to check if we need to download attachments
