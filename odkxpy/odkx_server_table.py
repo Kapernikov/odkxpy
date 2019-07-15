@@ -152,7 +152,7 @@ class OdkxServerTableDefinition():
 
         deflist = [cols[x["elementKey"]] for x in obj["orderedColumns"]]
 
-        return OdkxServerTableDefinition(obj["tableId"], obj["schemaETag"], deflist)
+        return OdkxServerTableDefinition(obj["schemaETag"], obj["tableId"],deflist)
 
 
 # OdkxServerTableDefinition = namedtuple('OdkxServerTableDefinition', [
