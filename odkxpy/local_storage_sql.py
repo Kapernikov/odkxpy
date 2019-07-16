@@ -1,6 +1,9 @@
 import sqlalchemy
+from contextlib import contextmanager
 from .odkx_server_table import OdkxServerTable, OdkxServerTableDefinition
 from .odkx_local_table import OdkxLocalTable
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
 from typing import Optional, List
 import os
 
@@ -18,6 +21,7 @@ class SqlLocalStorage(object):
         self.file_storage_root = file_storage_root
         self.useWindowsCompatiblePaths = useWindowsCompatiblePaths
         self._create_cache()
+        self.Session = sessionmaker(bind=engine)
 
     def _filestore_path(self, tableId:str):
         return os.path.join(self.file_storage_root, tableId)
@@ -27,6 +31,21 @@ class SqlLocalStorage(object):
         os.makedirs(filestore, exist_ok=True)
         self.initializeLocalStorage(server_table)
         return OdkxLocalTable(server_table.tableId, self.engine, self.schema, filestore, useWindowsCompatiblePaths=self.useWindowsCompatiblePaths, storage=self)
+
+    @contextmanager
+    def local_session_scope(self):
+        session = self.Session()
+        try:
+            yield session
+            session.commit()
+        except:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def declarative_base(self) -> sqlalchemy.ext.declarative.api.DeclarativeMeta:
+        return declarative_base(metadata = sqlalchemy.MetaData(schema = self.schema)) 
 
     def _create_cache(self, create=True):
 
