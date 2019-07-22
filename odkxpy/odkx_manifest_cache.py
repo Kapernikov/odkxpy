@@ -125,4 +125,4 @@ class OdkTableManifestCache(OdkManifestCache):
         if formId is None:
             raise CacheNotFoundError(
                 f"FormDef, sync manifest files for {tableId} first")
-        return formId
+        return formId.survey_formId
