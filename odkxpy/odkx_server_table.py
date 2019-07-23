@@ -326,6 +326,13 @@ class OdkxServerTable(object):
             rowId + "/download",
             headers=headers, data=payload)
 
+    def putAttachments(self, rowId, data):
+        headers = {"Content-Type": "application/json"}
+        return self.session.post(
+            self.server + self.appID + '/' + self.getTableRoot() + "/attachments/" +
+            rowId + "/download",
+            headers=headers, data=data)
+
     def alterDataRows(self, json):
         """Insert, Update or Delete"""
         return self.connection.PUT(self.getTableRoot() + "/rows", json)

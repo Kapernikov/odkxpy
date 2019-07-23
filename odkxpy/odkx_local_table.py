@@ -20,11 +20,14 @@ class FilesystemAttachmentStore(object):
         self.path = path
         self.useWindowsPaths = useWindowsPaths
 
-    def getFileName(self, id, filename):
+    def okWindows(self, id):
         xid = id
         if self.useWindowsPaths:
-            xid = id.replace(":","")
-        return os.path.join(self.path, xid, filename)
+            xid = id.replace(":", "")
+        return xid
+
+    def getFileName(self, id, filename):
+        return os.path.join(self.path, self.okWindows(id), filename)
 
     def hasFile(self, id, filename):
         return os.path.isfile(self.getFileName(id, filename))
@@ -52,6 +55,11 @@ class FilesystemAttachmentStore(object):
             os.remove(target)
         os.rename(target + '-tmp', target)
         del response
+
+    def getManifest(self, id) -> List[str]:
+        pathDir = os.path.join(self.path, self.okWindows(id))
+        listFilDir = os.listdir(pathdir)
+        return [OdkxLocalFile({'filename':f, 'md5hash': self.getMD5(id,f)}) for f in listFilDir if os.path.isfile(os.path.join(pathDir, f))]
 
 
 class OdkxLocalTable(object):
@@ -148,32 +156,62 @@ class OdkxLocalTable(object):
                                        remoteTable.getAttachment(rowId, f.filename, stream=True, timeout=300))
         missing_files = [x for x in target_file_list if not x in got_files]
         if len(missing_files) > 0:
-            print("MISSING FILES (trying again on next sync) for ", rowId, str(missing_files), "\ngot\n" ,str(got_files))
+            print("pulling: MISSING FILES (trying again on next sync) for ", rowId, str(missing_files), "\ngot\n", str(got_files))
             return False
         return True
 
+    def uploadAttachments(self, remoteTable: OdkxServerTable, rowId: str, target_file_list: List[str]):
+        got_files = []
+        remoteManifest = remoteTable.getAttachmentsManifest(rowId)
+        for f in self.attachments.getManifest(rowId):
+            got_files.append(f.filename)
+            remoteFileProperties = next((x for x in remoteManifest if x.filename == f.filename), None)
+            if remoteFileProperties:
+                if remoteFileProperties.md5hash == f.md5hash:
+                    continue
+            remoteTable.putAttachments(rowId, f.filename, self.attachments.open(rowId, f.filename))
 
-    def _sync_pull_attachments(self, remoteTable: OdkxServerTable):
-        attach_cols = [x.elementKey for x in remoteTable.getTableDefinition().columns if x.elementType == 'rowpath']
+        missing_files = [x for x in target_file_list if x not in got_files]
+        if len(missing_files) > 0:
+            print("pushing: MISSING FILES (trying again on next sync) for ", rowId, str(missing_files), "\ngot\n", str(got_files))
+            return False
+        return True
+
+    def _sync_attachments(self, remoteTable: OdkxServerTable, local_changes_prefix: str = None):
+        """ Sync the attachments for the rowids in state "sync_attachments"
+        """
+        if local_changes_prefix:
+            mode = "pushing"
+            table = self.tableId + "_" + local_changes_prefix
+        else:
+            mode = "pulling"
+            table = self.tableId
+
+        attach_cols = [x.elementKey for x in self.getTableDefinition().columns if x.elementType == 'rowpath']
         if len(attach_cols) == 0:
             return
         ids = []
         files_by_id = {}
         with self.engine.connect() as c:
-            result = c.execute("select id, {cols} from {schema}.{table} where state='sync_attachments'".format(
-                schema=self.schema, table=self.tableId,
-                cols=",".join(['"{c}"'.format(c=c) for c in attach_cols])
+            result = c.execute("select id, {cols} from {schema}.{table} where state in 'sync_attachments'".format(
+                schema=self.schema, table=table, cols=",".join(['"{c}"'.format(c=c) for c in attach_cols])
             ))
             for r in result:
                 ids.append(r['id'])
                 files_by_id[r['id']] = [r[x] for x in attach_cols if not r[x] is None]
-        print("syncing ", len(ids) , " rows attachments")
+        print(mode + " ", len(ids), " rows attachments")
 
+        def _writeSuccess(self, table, id):
+            with self.engine.connect() as c:
+                c.execute(sqlalchemy.sql.text("update {schema}.{table} set state='synced' where id=:rowid".format(
+                    schema=self.schema, table=table)), rowid=id)
         for id in ids:
-            if self.downloadAttachments(remoteTable, id, files_by_id[id]):
-                with self.engine.connect() as c:
-                    c.execute(sqlalchemy.sql.text("update {schema}.{table} set state='synced' where id=:rowid".format(
-                        schema=self.schema, table=self.tableId)), rowid=id)
+            if mode == "pushing":
+                if self.uploadAttachments(remoteTable, id, files_by_id[id]):
+                    _writeSuccess(table, id)
+            elif mode == "pulling":
+                if self.downloadAttachments(remoteTable, id, files_by_id[id]):
+                    _writeSuccess(table, id)
 
     def _staging_to_log(self, transaction: sqlalchemy.engine.Connection = None):
         st = self._getStagingTable()
@@ -202,7 +240,7 @@ class OdkxLocalTable(object):
     def _sync_iter_pull(self, remoteTable: OdkxServerTable, no_attachments: bool = False):
         if remoteTable.getdataETag() == self.getLocalDataETag():
             ## we still need to check if we need to download attachments
-            self._sync_pull_attachments(remoteTable)
+            self._sync_attachments(remoteTable)
             return False
         self._storage._cache_table_defintion(remoteTable.getTableDefinition())
         new_etag = self.stageAllDataChanges(remoteTable)
@@ -231,7 +269,7 @@ class OdkxLocalTable(object):
             self._staging_to_log(trans)
             self.updateLocalStatusDb(new_etag, trans)
         if not no_attachments:
-            self._sync_pull_attachments(remoteTable)
+            self._sync_attachments(remoteTable)
         return True
 
 
@@ -257,6 +295,50 @@ class OdkxLocalTable(object):
             state=','.join(["'" + x + "'" for x in state])
         )
         return qry
+
+    def _sync_iter_push(self, remoteTable: OdkxServerTable, local_changes_prefix: str, force_push: bool = False, no_attachments: bool = False):
+        definition = remoteTable.getTableDefinition().columns
+        id_list_good = []
+        id_list_conflict = []
+        if (self.hasUnresolvedConflicts(local_changes_prefix)):
+            raise Exception("unresolved conflicts, cannot push changes")
+        state_qry = self._qryState(local_changes_prefix, tableDefinition=definition, state=['new', 'modified'], force_push=force_push)
+        records = []
+        with self.engine.connect() as c:
+            for row in c.execute(state_qry):
+                records.append(self.row2rec(row, definition, remoteTable.connection.user))
+        json = {'rows': records, 'dataETag': self.getLocalDataETag()}
+        if (len(records) == 0):
+            return None
+        #return json
+        rs = remoteTable.alterDataRows(json)
+        for outcome in rs['rows']:
+            if outcome['outcome'] == 'IN_CONFLICT':
+                id_list_conflict.append(outcome['id'])
+            else:
+                id_list_good.append(outcome['id'])
+        def chunks(l, n):
+            """Yield successive n-sized chunks from l."""
+            for i in range(0, len(l), n):
+                yield l[i:i + n]
+        for chunk in chunks(id_list_good, 10):
+            qry = """update {schema}.{localtable} set state='sync_attachments' where id in ({ids})""".format(
+                schema=self.schema,
+                localtable=self.tableId+'_' + local_changes_prefix,
+                ids=','.join(["'{c}'".format(c=c) for c in chunk])
+            )
+            with self.engine.begin() as c:
+                c.execute(qry)
+        for chunk in chunks(id_list_conflict, 10):
+            qry = """update {schema}.{localtable} set state='conflict' where id in ({ids})""".format(
+                schema=self.schema,
+                localtable=self.tableId+'_' + local_changes_prefix,
+                ids=','.join(["'{c}'".format(c=c) for c in chunk])
+            )
+            with self.engine.begin() as c:
+                c.execute(qry)
+        if not no_attachments:
+            self._sync__attachments(remoteTable, local_changes_prefix)
 
     def row2rec(self,row: dict, definition: List[OdkxServerColumnDefinition], default_user: str):
         datacols = [x.elementKey for x in definition if x.isMaterialized()]
@@ -304,51 +386,10 @@ class OdkxLocalTable(object):
         :return:
         """
         self._sync_iter_pull(remoteTable)
-        definition = remoteTable.getTableDefinition().columns
-        id_list_good = []
-        id_list_conflict = []
         if local_changes_prefix is not None:
-            if (self.hasUnresolvedConflicts(local_changes_prefix)):
-                raise Exception("unresolved conflicts, cannot push changes")
-            state_qry = self._qryState(local_changes_prefix, tableDefinition=definition, state=['new', 'modified'], force_push=force_push)
-            records = []
-            with self.engine.connect() as c:
-                for row in c.execute(state_qry):
-                    records.append(self.row2rec(row, definition, remoteTable.connection.user))
-            json = {'rows': records, 'dataETag': self.getLocalDataETag()}
-            if (len(records) == 0):
-                return None
-            #return json
-            rs = remoteTable.alterDataRows(json)
-            for outcome in rs['rows']:
-                if outcome['outcome'] == 'IN_CONFLICT':
-                    id_list_conflict.append(outcome['id'])
-                else:
-                    id_list_good.append(outcome['id'])
-            def chunks(l, n):
-                """Yield successive n-sized chunks from l."""
-                for i in range(0, len(l), n):
-                    yield l[i:i + n]
-            for chunk in chunks(id_list_good, 10):
-                qry = """update {schema}.{localtable} set state='synced' where id in ({ids})""".format(
-                    schema=self.schema,
-                    localtable=self.tableId+'_' + local_changes_prefix,
-                    ids=','.join(["'{c}'".format(c=c) for c in chunk])
-                )
-                with self.engine.begin() as c:
-                    c.execute(qry)
-            for chunk in chunks(id_list_conflict, 10):
-                qry = """update {schema}.{localtable} set state='conflict' where id in ({ids})""".format(
-                    schema=self.schema,
-                    localtable=self.tableId+'_' + local_changes_prefix,
-                    ids=','.join(["'{c}'".format(c=c) for c in chunk])
-                )
-                with self.engine.begin() as c:
-                    c.execute(qry)
+            self._sync_iter_push(remoteTable, local_changes_prefix, force_push=force_push, no_attachments=no_attachments)
             self._sync_iter_pull(remoteTable, no_attachments=no_attachments)
             return rs
-
-
 
     def _getTableMeta(self, tablename: str) -> sqlalchemy.Table:
         meta = sqlalchemy.MetaData()
