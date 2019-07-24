@@ -169,7 +169,7 @@ class OdkxLocalTable(object):
             if remoteFileProperties:
                 if remoteFileProperties.md5hash == f.md5hash:
                     continue
-            remoteTable.putAttachments(rowId, f.filename, self.attachments.open(rowId, f.filename))
+            remoteTable.putAttachment(rowId, f.filename, self.attachments.open(rowId, f.filename))
 
         missing_files = [x for x in target_file_list if x not in got_files]
         if len(missing_files) > 0:
@@ -193,7 +193,7 @@ class OdkxLocalTable(object):
         ids = []
         files_by_id = {}
         with self.engine.connect() as c:
-            result = c.execute("select id, {cols} from {schema}.{table} where state in 'sync_attachments'".format(
+            result = c.execute("select id, {cols} from {schema}.{table} where state = 'sync_attachments'".format(
                 schema=self.schema, table=table, cols=",".join(['"{c}"'.format(c=c) for c in attach_cols])
             ))
             for r in result:

@@ -316,22 +316,31 @@ class OdkxServerTable(object):
             self.getTableRoot() + "/attachments/" + rowId + "/file/" + name,
             stream=stream, timeout=timeout)
 
-    def getAttachments(self, rowId, data):
+    def getAttachments(self, rowId, manifest):
         # Not working - TODO
-        # @ludovic i think this is probably setAttachments ? @TODO
         headers = {"Content-Type": "application/json"}
-        payload = json.dumps(data)
-        return self.session.post(
-            self.server + self.appID + '/' + self.getTableRoot() + "/attachments/" +
+        return self.connection.session.post(
+            self.connection.server + self.connection.appID + '/' + self.getTableRoot() + "/attachments/" +
             rowId + "/download",
-            headers=headers, data=payload)
+            headers=headers, data=manifest)
+
+    def putAttachment(self, rowId, name, data):
+        # Not working - TODO
+        headers = {"Content-Type": "application/octet-stream"}
+        return self.connection.session.put(
+            self.connection.server + self.connection.appID + '/' + self.getTableRoot() + "/attachments/" +
+            rowId + "/file/" + name,
+            headers=headers, data=data)
 
     def putAttachments(self, rowId, data):
-        headers = {"Content-Type": "application/json"}
-        return self.session.post(
-            self.server + self.appID + '/' + self.getTableRoot() + "/attachments/" +
-            rowId + "/download",
+        # https://github.com/opendatakit/sync-endpoint/blob/c0300338a3ef133523f46b52038d0a0bf63b35ca/src/main/java/org/opendatakit/aggregate/odktables/impl/api/InstanceFileService.java
+        # Not working - TODO
+        headers = {"Content-Type": "multipart/form-data"}
+        return self.connection.session.post(
+            self.connection.server + self.connection.appID + '/' + self.getTableRoot() + "/attachments/" +
+            rowId + "/upload",
             headers=headers, data=data)
+
 
     def alterDataRows(self, json):
         """Insert, Update or Delete"""
