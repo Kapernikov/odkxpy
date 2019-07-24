@@ -103,6 +103,7 @@ class OdkxServerTableDefinition():
         self.schemaETag = schemaETag
         self.tableId = tableId
         self.columns = columns
+        self.columnsKeyList = [col.elementKey for col in columns]
 
     def _asdict(self):
         """
