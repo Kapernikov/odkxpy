@@ -132,6 +132,7 @@ class OdkxServerTableDefinition():
 
     @classmethod
     def _from_cache(cls, obj) -> "OdkxServerTableDefinition":
+
         cols = {}
         for c in obj["orderedColumns"]:
             dd = {}
@@ -146,9 +147,11 @@ class OdkxServerTableDefinition():
         for c in obj['orderedColumns']:
             children = c['listChildElementKeys']
             parent = cols[c['elementKey']]
-            for c in children:
-                cols[c].parentElement = parent
-                parent.childElements.append(cols[c])
+            childcoldefs = []
+            for child in children:
+                cols[child].parentElement = parent
+                childcoldefs.append(cols[child])
+            parent.childElements = childcoldefs
 
         deflist = [cols[x["elementKey"]] for x in obj["orderedColumns"]]
 
