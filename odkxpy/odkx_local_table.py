@@ -81,6 +81,14 @@ class OdkxLocalTable(object):
                 return row[0]
         return str('')
 
+    def getInitialDataETag(self):
+        with self.engine.connect() as c:
+            rs = c.execute(text(f"""select "dataETag" from {self.schema}.status_table where "table_name" = :tableid order by sync_date asc limit 1
+                """), tableid=self.tableId)
+            for row in rs:
+                return row[0]
+        return str('')
+
     def _getStagingTable(self) -> sqlalchemy.Table:
         meta = MetaData()
         meta.reflect(self.engine, schema=self.schema, only=[self.tableId + '_staging'])
@@ -273,8 +281,8 @@ class OdkxLocalTable(object):
         return True
 
 
-    def _qryState(self, local_changes_prefix: str, tableDefinition: List[OdkxServerColumnDefinition], state: List[str], force_push: bool):
-        locChanges = self._getTableMeta(self.tableId + '_' + local_changes_prefix)
+    def _qryState(self, localTable: str, tableDefinition: List[OdkxServerColumnDefinition], state: List[str], force_push: bool):
+        locChanges = self._getTableMeta(localTable)
         locTable = self._getTableMeta(self.tableId)
         locChangesCols = [x.name for x in locChanges.columns]
         locTableCols = [x.name for x in locTable.columns]
@@ -289,7 +297,7 @@ class OdkxLocalTable(object):
         col_list = ['l."{x}"'.format(x=x) if x in colsTakeLocally else 'r."{x}"'.format(x=x) for x in locTableCols]
         qry = "SELECT {col_list} FROM {schema}.{loctable} l LEFT OUTER JOIN {schema}.{table} r ON l.id = r.id WHERE l.state in ({state})".format(
             schema=self.schema,
-            loctable=self.tableId + '_' + local_changes_prefix,
+            loctable=localTable,
             table=self.tableId,
             col_list=','.join(col_list),
             state=','.join(["'" + x + "'" for x in state])
@@ -300,9 +308,20 @@ class OdkxLocalTable(object):
         definition = remoteTable.getTableDefinition().columns
         id_list_good = []
         id_list_conflict = []
-        if (self.hasUnresolvedConflicts(local_changes_prefix)):
+
+        if not local_changes_prefix.startswith("_legacy_"):
+            localTable = self.tableId + '_' + local_changes_prefix
+        else:
+            localTable = local_changes_prefix + self.tableId + "_log"
+
+        if (self.hasUnresolvedConflicts(localTable)):
             raise Exception("unresolved conflicts, cannot push changes")
-        state_qry = self._qryState(local_changes_prefix, tableDefinition=definition, state=['new', 'modified'], force_push=force_push)
+
+        if not local_changes_prefix.startswith("_legacy_"):
+            state_qry = self._qryState(localTable, tableDefinition=definition, state=['new', 'modified'], force_push=force_push)
+        else:
+            state_qry = self._getLegacyBatch(localTable, tableDefinition=definition, state=['legacyUpload'], force_push=force_push)
+
         records = []
         with self.engine.connect() as c:
             for row in c.execute(state_qry):
@@ -310,13 +329,14 @@ class OdkxLocalTable(object):
         json = {'rows': records, 'dataETag': self.getLocalDataETag()}
         if (len(records) == 0):
             return None
-        #return json
+        #  return json
         rs = remoteTable.alterDataRows(json)
         for outcome in rs['rows']:
             if outcome['outcome'] == 'IN_CONFLICT':
                 id_list_conflict.append(outcome['id'])
             else:
                 id_list_good.append(outcome['id'])
+
         def chunks(l, n):
             """Yield successive n-sized chunks from l."""
             for i in range(0, len(l), n):
@@ -324,7 +344,7 @@ class OdkxLocalTable(object):
         for chunk in chunks(id_list_good, 10):
             qry = """update {schema}.{localtable} set state='sync_attachments' where id in ({ids})""".format(
                 schema=self.schema,
-                localtable=self.tableId+'_' + local_changes_prefix,
+                localtable=localTable,
                 ids=','.join(["'{c}'".format(c=c) for c in chunk])
             )
             with self.engine.begin() as c:
@@ -332,7 +352,7 @@ class OdkxLocalTable(object):
         for chunk in chunks(id_list_conflict, 10):
             qry = """update {schema}.{localtable} set state='conflict' where id in ({ids})""".format(
                 schema=self.schema,
-                localtable=self.tableId+'_' + local_changes_prefix,
+                localtable=localTable,
                 ids=','.join(["'{c}'".format(c=c) for c in chunk])
             )
             with self.engine.begin() as c:
@@ -496,8 +516,7 @@ class OdkxLocalTable(object):
                     return True
         return False
 
-    def hasUnresolvedConflicts(self, source_prefix: str):
-        def_tn = self.tableId + '_' + source_prefix
+    def hasUnresolvedConflicts(self, def_tn: str):
         q_test = """
         select count(id) as aantal from {schema}."{deftn}" where state in ('conflict')
         """.format(schema=self.schema, deftn=def_tn)
@@ -597,3 +616,84 @@ class OdkxLocalTable(object):
             """.format(schema=self.schema, def_tn=def_tn, stagingtable=staging_tn, w=w))
         self._copyMissingData(staging_tn, def_tn)
 
+    def _checkLastLegacyNb(self):
+        """ check the number of the last existing legacy table
+        """
+        with self.engine.begin() as c:
+            c.execute("""select split_part(substring("table_name",8) '_', 1) as legacy_nb from information_schema.tables where "table_schema"='{schema}'
+                      and "table_name" like '_legacy_%_{tableId}_' order by legacy_nb::int desc limit 1
+                      """).format(schema=self.schema, tableId=self.tableId)
+            return c.fetch()
+
+    def _addStateColumn(self, table):
+        with self.engine.begin() as c:
+            c.execute("""ALTER TABLE {schema}.{table} ADD COLUMN state VARCHAR;
+                      """).format(schema=self.schema, tableId=table)
+
+    def _getLegacyBatch(self, localTable: str, state, force_push: bool = False):
+        genericCols = ['id', 'rowETag', 'savepointTimestamp', 'dataETagAtModification', 'savepointCreator', 'formId', 'savepointType', 'lastUpdateUser']
+        mappedCols = [col + ' as ' + self.res['validMapping'][col] for col in self.res['validMapping'].keys()]
+        unchangedCols = [col for col in self.res['common'] if col not in self.res['validMapping'].values()]
+        colsToTake = genericCols + mappedCols + unchangedCols
+
+        if force_push:
+            # take row ETag directly from server, making push always work even if we updated old data
+            # it can still conflict but now only because somebody uploaded between us pulling and us pushing
+            colsToTake = [x for x in colsToTake if x not in ['rowETag']]
+
+        qry = "SELECT {col_list} FROM {schema}.{loctable} WHERE state in ({state})".format(
+            schema=self.schema,
+            loctable=localTable,
+            col_list=','.join(colsToTake),
+            state=','.join(["'" + x + "'" for x in state])
+        )
+        return qry
+
+    def _checkIfPreparedUpload(self, table):
+        with self.engine.begin() as c:
+            c.execute("""SELECT * FROM {schema}.{table} WHERE "state" = 'uploadLegacy'
+                      """).format(schema=self.schema, tableId=table)
+            if not c.rowcount > 1:
+                return False
+
+    def _prepareUpload(self, dataETag, table):
+        with self.engine.begin() as c:
+            c.execute("""UPDATE {schema}.{table} SET state = 'legacyUpload' WHERE "dataETagAtModification" = {dataETag} AND "state" not in ('sync_attachments');
+                      """).format(schema=self.schema, tableId=table, dataETag=dataETag)
+
+
+    def toLegacy(self):
+        lastLegacyNb = self._checkLastLegacyNb()
+        # move to legacy
+        newLegacyNb = int(lastLegacyNb) + 1
+        with self.engine.begin() as c:
+            c.eecute("""
+                     DO
+                     $$
+                     DECLARE
+                         row record;
+                     BEGIN
+                         FOR row IN SELECT "table_name" FROM information_schema.tables WHERE "table_schema"='{schema}'
+                             and "table_name" like '{tableId}_%'
+                         LOOP
+                             EXECUTE 'ALTER TABLE {schema}.' || row."table_name" || ' RENAME _legacy_{legacy_nb}_' || row."table_name";
+                         END LOOP;
+                     END;
+                     $$;
+                     """).format(schema=self.schema, tableId=self.tableId, legacy_nb=newLegacyNb)
+
+    def uploadLegacy(self, remoteTable: OdkxServerTable, res, force_push: bool = False):
+        #  Calculate the order of history via the timestamp (we don't have historization with the ETag, only on the server)
+        """ Sync by batch using the history with only unique occurence of row id's
+        """
+        lastLegacyNb = self._checkLastLegacyNb()
+        self.res = res
+        if lastLegacyNb:
+            legacy_prefix = "_legacy_" + lastLegacyNb + "_"
+            table = legacy_prefix + self.tableId + "_log"
+            self._addStateColumn(table)
+            sequence = remoteTable.getChangeSets(dataETag=self.getInitialDataETag)
+            for dataETag in sequence:
+                if not self.checkIfPreparedUpload():
+                    self._prepareUpload(dataETag, table)
+                self._sync_iter_push(remoteTable, legacy_prefix, force_push=force_push)

@@ -155,6 +155,15 @@ class OdkxServerTableDefinition():
 
         return OdkxServerTableDefinition(obj["schemaETag"], obj["tableId"],deflist)
 
+    @classmethod
+    def _from_DefFile(cls, tableId, data) -> "OdkxServerTableDefinition":
+        data.pop(0)
+        deflist = []
+        # TODO : incomplete TableDefinition; children, parents and properties are not set
+        for col in data:
+            deflist.append(OdkxServerColumnDefinition(*col))
+        return OdkxServerTableDefinition("", tableId, deflist)
+
 
 # OdkxServerTableDefinition = namedtuple('OdkxServerTableDefinition', [
 #     'schemaETag', 'tableId', 'orderedColumns', 'selfUri', 'tableUri'
@@ -228,8 +237,8 @@ class OdkxServerTable(object):
 
         return OdkxServerTableDefinition(etag, t_id, deflist)
 
-    # def setTableDefinition(self, json):
-    #    return self.connection.PUT(self.getTableRoot(), json)
+    def setTableDefinition(self, json):
+        return self.connection.PUT(self.getTableRoot(), json)
 
     def deleteTable(self, are_you_sure: bool):
         """To delete a table

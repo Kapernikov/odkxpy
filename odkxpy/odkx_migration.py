@@ -1,20 +1,9 @@
 from .odkx_server_table import OdkxServerTable, OdkxServerTableDefinition
-from .odkx_connection import SqlLocalStorage
+from .local_storage_sql import SqlLocalStorage
 import os
 import json
-"""
-Utility to migrate a table from one table definition to another while keeping the compatible data
+import csv
 
-Process :
-    - print compatibilities of the column between the 2 table definitions
-    - verify that the table has a valid historization
-    - sync the local storage
-    - migrated the local table and all the linked tables to _legacy1_tableId...
-    - delete the old table definition
-    - upload the new table definition
-    - initialize the table with the new table definition. Trigger reupload if legacy table available (option).
-    - reupload the whole history for compatible columns
-"""
 ctypes_map = {
     '.js': 'application/x-javascript',
     '.css': 'text/css',
@@ -25,18 +14,28 @@ ctypes_map = {
 
 
 class migrator(object):
+    """
+    Utility to migrate a table from one table definition to another while keeping the compatible data
+    Process :
+        - print compatibilities of the column between the 2 table definitions
+        - sync the local table
+        - migrated the local table and all the linked tables to _legacy1_tableId...
+        - delete the old table definition
+        - upload the new table definition
+        - initialize the table with the new table definition
+        - reupload the whole history for compatible columns if a legacy table exist
+    """
 
-    def __init__(self, table: OdkxServerTable, pathFormDef: str, local_storage: SqlLocalStorage):
+    def __init__(self, table: OdkxServerTable, pathDefFile: str, local_storage: SqlLocalStorage):
         self.table = table
-        self.pathFormDef = pathFormDef
+        self.pathDefFile = pathDefFile
         self.local_storage = local_storage
         self.local_table = local_storage.getLocalTable(self.table.tableId)
 
-    def getNewTableDefinition(self):
-        with open(self.pathFormDef) as json_file:
-            data = json.load(json_file)
-        tableDef = OdkxServerTableDefinition._from_formDef(data)  # TODO or from defition.csv
-        return tableDef
+    def getNewTableDefinition(self) -> OdkxServerTableDefinition:
+        with open(self.pathDef, newline='') as csvfile:
+            data = list(csv.reader(csvfile))
+        return OdkxServerTableDefinition._from_DefFile(self.table.tableId, data)
 
     def getColumnMapping(self):
         with open(self.path) as file:
@@ -60,10 +59,7 @@ class migrator(object):
         return incompat
 
 
-    def checkIfSafe(self):
-        newTableDef = self.getNewTableDefinition()
-        oldTableDef = self.table.getTableDefinition()
-
+    def compareTableDef(self, oldTableDef: OdkxServerTableDefinition, newTableDef: OdkxServerTableDefinition):
         mapping = self.getColumnMapping()
         validMapping = self.getValidMapping(mapping, oldTableDef.columnsKeyList, newTableDef.columnsKeyList)
 
@@ -96,7 +92,7 @@ class migrator(object):
         if incompat:
             print("\nThe following columns will not be keep as there is \033[94mincompatibility\033[0m:")
             print(json.dumps(incompat, indent=4))
-        return incompat
+        return {'mapping': validMapping, 'common': common, 'incompat': incompat}
 
     def getListOfFiles(self, dirName):
         # create a list of file and sub directories 
@@ -145,16 +141,16 @@ class migrator(object):
         self.putFiles("table")
 
     def migrate(self, force=False):
-        incompat = self.checkIfSafe()
-        if incompat and not force:
+        newTableDef = self.getNewTableDefinition()
+        oldTableDef = self.table.getTableDefinition()
+        res = self.compareTableDef(oldTableDef, newTableDef)
+        if res['incompat'] and not force:
             print("The migration was aborted")
             return
-        self.local_table.checkValidHistory()
         self.local_table.sync(self.table.tableId)
         self.local_table.toLegacy()
         self.table.deleteTableDefinition(False)
-        self.table.setTableDefinition()
+        self.table.setTableDefinition(newTableDef._asdict())
         self.uploadTableFiles()
         self.local_storage.initializeLocalStorage()
-        self.local_table.uploadLegacy()
-        print("The migration was successfull")
+        self.local_table.uploadLegacy(self.table, res, force)
