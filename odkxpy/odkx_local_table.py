@@ -653,7 +653,7 @@ class OdkxLocalTable(object):
         with self.engine.begin() as c:
             c.execute("""SELECT * FROM {schema}.{table} WHERE "state" = 'uploadLegacy'
                       """).format(schema=self.schema, tableId=table)
-            if not c.rowcount > 1:
+            if not c.rowcount > 0:
                 return False
 
     def _prepareUpload(self, dataETag, table):
@@ -661,13 +661,19 @@ class OdkxLocalTable(object):
             c.execute("""UPDATE {schema}.{table} SET state = 'legacyUpload' WHERE "dataETagAtModification" = {dataETag} AND "state" not in ('sync_attachments');
                       """).format(schema=self.schema, tableId=table, dataETag=dataETag)
 
+    def _constructSequence(self, table):
+        with self.engine.begin() as c:
+            c.execute("""SELECT DISTINCT ON ("dataETagAtModification") "dataETagAtModification" FROM {schema}.{table} ORDER BY "savepointTimestamp" asc
+                      """).format(schema=self.schema, tableId=table)
+            return c.fetchall()
+
 
     def toLegacy(self):
         lastLegacyNb = self._checkLastLegacyNb()
         # move to legacy
         newLegacyNb = int(lastLegacyNb) + 1
         with self.engine.begin() as c:
-            c.eecute("""
+            c.execute("""
                      DO
                      $$
                      DECLARE
@@ -692,7 +698,8 @@ class OdkxLocalTable(object):
             legacy_prefix = "_legacy_" + lastLegacyNb + "_"
             table = legacy_prefix + self.tableId + "_log"
             self._addStateColumn(table)
-            sequence = remoteTable.getChangeSets(dataETag=self.getInitialDataETag)
+            # sequence = remoteTable.getChangeSets(dataETag=self.getInitialDataETag)  TODO: enable this when fixed in the sync endpoint https://forum.opendatakit.org/t/get-changesets-api-from-the-odk-x-sync-protocol/21084/2
+            sequence = self._constructSequence(table)
             for dataETag in sequence:
                 if not self.checkIfPreparedUpload():
                     self._prepareUpload(dataETag, table)

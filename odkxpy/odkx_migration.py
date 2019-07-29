@@ -95,14 +95,14 @@ class migrator(object):
         return {'mapping': validMapping, 'common': common, 'incompat': incompat}
 
     def getListOfFiles(self, dirName):
-        # create a list of file and sub directories 
+        # create a list of file and sub directories
         listOfFile = os.listdir(dirName)
         allFiles = list()
         # Iterate over all the entries
         for entry in listOfFile:
             # Create full path
             fullPath = os.path.join(dirName, entry)
-            # If entry is a directory then get the list of files in this directory 
+            # If entry is a directory then get the list of files in this directory
             if os.path.isdir(fullPath):
                 allFiles = allFiles + self.getListOfFiles(fullPath)
             else:
