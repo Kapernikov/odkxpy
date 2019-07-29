@@ -24,54 +24,70 @@ class migrator(object):
         - upload the new table definition
         - initialize the table with the new table definition
         - reupload the whole history for compatible columns if a legacy table exist
+
+
+    pathDefFile : path to the definition.csv file
+    pathFile : path to the mapping file (old : new)
     """
 
-    def __init__(self, table: OdkxServerTable, pathDefFile: str, local_storage: SqlLocalStorage):
+    def __init__(self, table: OdkxServerTable, pathDefFile: str, local_storage: SqlLocalStorage, pathFile: str = None):
         self.table = table
         self.pathDefFile = pathDefFile
+        self.pathFile = pathFile
         self.local_storage = local_storage
-        self.local_table = local_storage.getLocalTable(self.table.tableId)
+        self.local_table = local_storage.getLocalTable(self.table)
 
     def getNewTableDefinition(self) -> OdkxServerTableDefinition:
-        with open(self.pathDef, newline='') as csvfile:
+        with open(self.pathDefFile, newline='') as csvfile:
             data = list(csv.reader(csvfile))
         return OdkxServerTableDefinition._from_DefFile(self.table.tableId, data)
 
     def getColumnMapping(self):
-        with open(self.path) as file:
+        with open(self.pathFile) as file:
             mapping = json.load(file)
         return mapping
 
     def getValidMapping(self, mapping, oldColumns, newColumns):
         validMapping = {}
         for k, v in mapping.items():
+            print(k,v, oldColumns, newColumns)
             if k in oldColumns and v in newColumns:
                 validMapping[k] = v
             else:
                 print(f"Unknown column:{k} or {v}")
         return validMapping
 
-    def checkColumnsType(self, common, oldTableDef: OdkxServerTableDefinition, newTableDef: OdkxServerTableDefinition):
+    def checkColumnsType(self, common, oldTableDef: OdkxServerTableDefinition, newTableDef: OdkxServerTableDefinition, validMapping):
+        # TODO : refactor
         incompat = []
         for item in common:
-            if oldTableDef.getColDef(item).elementType != newTableDef.getColDef(item).elementType:
-                incompat.append({item: [oldTableDef.getColDef(item).elementType, newTableDef.getColDef(item).elementType]})
+            if oldTableDef.getColDef(item) is None:
+                oldItem = list(validMapping.keys())[list(validMapping.values()).index(item)]
+                oldColDef = oldTableDef.getColDef(oldItem)
+            else:
+                oldColDef = oldTableDef.getColDef(item)
+
+            if oldColDef.elementType != newTableDef.getColDef(item).elementType:
+                incompat.append({oldColDef.elementKey: oldColDef.elementType, item: newTableDef.getColDef(item).elementType})
         return incompat
 
 
     def compareTableDef(self, oldTableDef: OdkxServerTableDefinition, newTableDef: OdkxServerTableDefinition):
-        mapping = self.getColumnMapping()
-        validMapping = self.getValidMapping(mapping, oldTableDef.columnsKeyList, newTableDef.columnsKeyList)
-
-        if validMapping:
-            oldMappedColumns = [validMapping[col] if col in validMapping.keys() else col for col in oldTableDef.columnsKeyList]
+        if self.pathFile is not None:
+            mapping = self.getColumnMapping()
+            validMapping = self.getValidMapping(mapping, oldTableDef.columnsKeyList, newTableDef.columnsKeyList)
+            if validMapping:
+                oldMappedColumns = [validMapping[col] if col in validMapping.keys() else col for col in oldTableDef.columnsKeyList]
+            else:
+                oldMappedColumns = oldTableDef.columnsKeyList
         else:
+            validMapping = False
             oldMappedColumns = oldTableDef.columnsKeyList
 
-        deleted = list(set(oldMappedColumns) - set(newTableDef.columnsKeyList))
-        new = list(set(newTableDef.columnsKeyList) - set(oldMappedColumns))
-        common = list(set(newTableDef.columnsKeyList) & set(oldMappedColumns))
-        incompat = self.checkColumnsType(common, oldTableDef, newTableDef)
+        deleted = sorted(list(set(oldMappedColumns) - set(newTableDef.columnsKeyList)))
+        new = sorted(list(set(newTableDef.columnsKeyList) - set(oldMappedColumns)))
+        common = sorted(list(set(newTableDef.columnsKeyList) & set(oldMappedColumns)))
+        incompat = self.checkColumnsType(common, oldTableDef, newTableDef, validMapping)
 
 
         print("\nReport on the migration: ")
@@ -147,7 +163,7 @@ class migrator(object):
         if res['incompat'] and not force:
             print("The migration was aborted")
             return
-        self.local_table.sync(self.table.tableId)
+        self.local_table.sync(self.table)
         self.local_table.toLegacy()
         self.table.deleteTableDefinition(False)
         self.table.setTableDefinition(newTableDef._asdict())

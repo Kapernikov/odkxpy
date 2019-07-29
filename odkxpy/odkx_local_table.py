@@ -185,6 +185,11 @@ class OdkxLocalTable(object):
             return False
         return True
 
+    def _writeSuccess(self, table, id):
+        with self.engine.connect() as c:
+            c.execute(sqlalchemy.sql.text("update {schema}.{table} set state='synced' where id=:rowid".format(
+                schema=self.schema, table=table)), rowid=id)
+
     def _sync_attachments(self, remoteTable: OdkxServerTable, local_changes_prefix: str = None):
         """ Sync the attachments for the rowids in state "sync_attachments"
         """
@@ -209,17 +214,13 @@ class OdkxLocalTable(object):
                 files_by_id[r['id']] = [r[x] for x in attach_cols if not r[x] is None]
         print(mode + " ", len(ids), " rows attachments")
 
-        def _writeSuccess(self, table, id):
-            with self.engine.connect() as c:
-                c.execute(sqlalchemy.sql.text("update {schema}.{table} set state='synced' where id=:rowid".format(
-                    schema=self.schema, table=table)), rowid=id)
         for id in ids:
             if mode == "pushing":
                 if self.uploadAttachments(remoteTable, id, files_by_id[id]):
-                    _writeSuccess(table, id)
+                    self._writeSuccess(table, id)
             elif mode == "pulling":
                 if self.downloadAttachments(remoteTable, id, files_by_id[id]):
-                    _writeSuccess(table, id)
+                    self._writeSuccess(table, id)
 
     def _staging_to_log(self, transaction: sqlalchemy.engine.Connection = None):
         st = self._getStagingTable()
@@ -320,7 +321,7 @@ class OdkxLocalTable(object):
         if not local_changes_prefix.startswith("_legacy_"):
             state_qry = self._qryState(localTable, tableDefinition=definition, state=['new', 'modified'], force_push=force_push)
         else:
-            state_qry = self._getLegacyBatch(localTable, tableDefinition=definition, state=['legacyUpload'], force_push=force_push)
+            state_qry = self._getLegacyBatch(localTable, state=['legacyUpload'], force_push=force_push)
 
         records = []
         with self.engine.connect() as c:
@@ -616,19 +617,30 @@ class OdkxLocalTable(object):
             """.format(schema=self.schema, def_tn=def_tn, stagingtable=staging_tn, w=w))
         self._copyMissingData(staging_tn, def_tn)
 
+    def _checkIfLegacy(self):
+        """ check legacy tables exist
+        """
+        with self.engine.begin() as c:
+            res = c.execute("""select * from information_schema.tables where "table_schema"='{schema}'
+                      and "table_name" like '\_legacy\_%%\_{tableId}\_log' limit 1""".format(schema=self.schema, tableId=self.tableId))
+            if res.first() is None:
+                return False
+            else:
+                return True
+
     def _checkLastLegacyNb(self):
         """ check the number of the last existing legacy table
         """
         with self.engine.begin() as c:
-            c.execute("""select split_part(substring("table_name",8) '_', 1) as legacy_nb from information_schema.tables where "table_schema"='{schema}'
-                      and "table_name" like '_legacy_%_{tableId}_' order by legacy_nb::int desc limit 1
-                      """).format(schema=self.schema, tableId=self.tableId)
-            return c.fetch()
+            res = c.execute("""select cast(split_part(substring("table_name",9), '_', 1) as int) as legacy_nb from information_schema.tables where "table_schema"='{schema}'
+                      and "table_name" like '\_legacy\_%%\_{tableId}\_log' order by legacy_nb desc limit 1
+                      """.format(schema=self.schema, tableId=self.tableId))
+            return res.scalar()
 
     def _addStateColumn(self, table):
         with self.engine.begin() as c:
             c.execute("""ALTER TABLE {schema}.{table} ADD COLUMN state VARCHAR;
-                      """).format(schema=self.schema, tableId=table)
+                      """.format(schema=self.schema, table=table))
 
     def _getLegacyBatch(self, localTable: str, state, force_push: bool = False):
         genericCols = ['id', 'rowETag', 'savepointTimestamp', 'dataETagAtModification', 'savepointCreator', 'formId', 'savepointType', 'lastUpdateUser']
@@ -651,27 +663,36 @@ class OdkxLocalTable(object):
 
     def _checkIfPreparedUpload(self, table):
         with self.engine.begin() as c:
-            c.execute("""SELECT * FROM {schema}.{table} WHERE "state" = 'uploadLegacy'
-                      """).format(schema=self.schema, tableId=table)
-            if not c.rowcount > 0:
+            res = c.execute("""SELECT * FROM {schema}.{table} WHERE "state" = 'uploadLegacy'
+                      """.format(schema=self.schema, table=table))
+            if not res.rowcount > 0:
                 return False
+            else:
+                return True
 
     def _prepareUpload(self, dataETag, table):
         with self.engine.begin() as c:
-            c.execute("""UPDATE {schema}.{table} SET state = 'legacyUpload' WHERE "dataETagAtModification" = {dataETag} AND "state" not in ('sync_attachments');
-                      """).format(schema=self.schema, tableId=table, dataETag=dataETag)
+            c.execute("""UPDATE {schema}.{table} SET state = 'legacyUpload' WHERE {table}."dataETagAtModification" = '{dataETag}' AND {table}."state" != 'sync_attachments';
+                      """.format(schema=self.schema, table=table, dataETag=dataETag))
 
     def _constructSequence(self, table):
+        seq = []
         with self.engine.begin() as c:
-            c.execute("""SELECT DISTINCT ON ("dataETagAtModification") "dataETagAtModification" FROM {schema}.{table} ORDER BY "savepointTimestamp" asc
-                      """).format(schema=self.schema, tableId=table)
-            return c.fetchall()
+            res = c.execute("""SELECT DISTINCT ON (sub."dataETagAtModification") sub."dataETagAtModification" FROM (
+                                SELECT * FROM {schema}.{table} ORDER BY "savepointTimestamp" asc
+                                ) as sub
+                      """.format(schema=self.schema, table=table))
+            for row in res:
+                seq.append(row[0])
+        return seq
 
 
     def toLegacy(self):
-        lastLegacyNb = self._checkLastLegacyNb()
-        # move to legacy
-        newLegacyNb = int(lastLegacyNb) + 1
+        if self._checkIfLegacy():
+            lastLegacyNb = self._checkLastLegacyNb()
+            newLegacyNb = int(lastLegacyNb) + 1
+        else:
+            newLegacyNb = 1
         with self.engine.begin() as c:
             c.execute("""
                      DO
@@ -680,24 +701,24 @@ class OdkxLocalTable(object):
                          row record;
                      BEGIN
                          FOR row IN SELECT "table_name" FROM information_schema.tables WHERE "table_schema"='{schema}'
-                             and "table_name" like '{tableId}_%'
+                             and ("table_name" like '{tableId}\_%%' or "table_name" = '{tableId}')
                          LOOP
-                             EXECUTE 'ALTER TABLE {schema}.' || row."table_name" || ' RENAME _legacy_{legacy_nb}_' || row."table_name";
+                             EXECUTE 'ALTER TABLE {schema}.' || row."table_name" || ' RENAME TO _legacy_{legacy_nb}_' || row."table_name";
                          END LOOP;
                      END;
                      $$;
-                     """).format(schema=self.schema, tableId=self.tableId, legacy_nb=newLegacyNb)
+                     """.format(schema=self.schema, tableId=self.tableId, legacy_nb=newLegacyNb))
+        self._addStateColumn("_legacy_" + str(newLegacyNb) + "_" + self.tableId + "_log")
 
     def uploadLegacy(self, remoteTable: OdkxServerTable, res, force_push: bool = False):
         #  Calculate the order of history via the timestamp (we don't have historization with the ETag, only on the server)
         """ Sync by batch using the history with only unique occurence of row id's
         """
-        lastLegacyNb = self._checkLastLegacyNb()
-        self.res = res
-        if lastLegacyNb:
-            legacy_prefix = "_legacy_" + lastLegacyNb + "_"
+        if self._checkIfLegacy():
+            lastLegacyNb = self._checkLastLegacyNb()
+            self.res = res
+            legacy_prefix = "_legacy_" + str(lastLegacyNb) + "_"
             table = legacy_prefix + self.tableId + "_log"
-            self._addStateColumn(table)
             # sequence = remoteTable.getChangeSets(dataETag=self.getInitialDataETag)  TODO: enable this when fixed in the sync endpoint https://forum.opendatakit.org/t/get-changesets-api-from-the-odk-x-sync-protocol/21084/2
             sequence = self._constructSequence(table)
             for dataETag in sequence:

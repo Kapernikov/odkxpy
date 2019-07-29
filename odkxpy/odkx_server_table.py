@@ -74,6 +74,7 @@ class OdkxServerColumnDefinition(object):
         return True
 
     def _serialization_helper(self):
+        # TODO fix listChildElementKeys
         return {
             "elementKey": self.elementKey,
             "elementName": self.elementName,
@@ -116,6 +117,11 @@ class OdkxServerTableDefinition():
         json["orderedColumns"] = [obj._serialization_helper()
                                   for obj in self.columns]
         return json
+
+    def getColDef(self, column: str) -> OdkxServerColumnDefinition:
+        for obj in self.columns:
+            if obj.elementKey == column:
+                return obj
 
     @classmethod
     def _extract(cls, obj) -> "OdkxServerTableDefinition":
