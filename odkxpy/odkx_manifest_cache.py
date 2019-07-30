@@ -21,6 +21,8 @@ def formdef_class(base):
         form_id = sqlalchemy.Column(sqlalchemy.String)
         xlsx = sqlalchemy.Column(
             sqlalchemy.dialects.postgresql.JSONB(none_as_null=False))
+        specification = sqlalchemy.Column(
+            sqlalchemy.dialects.postgresql.JSONB(none_as_null=False))
         instance_name = sqlalchemy.Column(sqlalchemy.String)
 
         def __getitem__(self, key):
@@ -81,7 +83,7 @@ class OdkTableManifestCache(OdkManifestCache):
                 if setting["setting_name"] == "instance_name":
                     instance_name = setting["value"]
             return self.FormDef(filename=manifest_file.filename, tableId=tableId, md5hash=manifest_file.md5hash,
-                             form_id=form_id, xlsx=obj["xlsx"], instance_name=instance_name)
+                             form_id=form_id, xlsx=obj["xlsx"], specification=obj["specification"], instance_name=instance_name)
         return mapper
 
     def _properties_mapper(self, manifest_file, tableId):
