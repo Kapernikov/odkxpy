@@ -1,4 +1,5 @@
 from .odkx_server_table import OdkxServerTable, OdkxServerTableDefinition
+from .odkx_server_meta import OdkxServerMeta
 from .local_storage_sql import SqlLocalStorage
 import os
 import json
@@ -36,11 +37,12 @@ class migrator(object):
         self.pathFile = pathFile
         self.local_storage = local_storage
         self.local_table = local_storage.getLocalTable(self.table)
+        self.meta = OdkxServerMeta(self.table.connection)
 
     def getNewTableDefinition(self) -> OdkxServerTableDefinition:
         with open(self.pathDefFile, newline='') as csvfile:
-            data = list(csv.reader(csvfile))
-        return OdkxServerTableDefinition._from_DefFile(self.table.tableId, data)
+            colList = list(csv.reader(csvfile))
+        return OdkxServerTableDefinition._from_DefFile(self.table.tableId, colList)
 
     def getColumnMapping(self):
         with open(self.pathFile) as file:
@@ -50,7 +52,6 @@ class migrator(object):
     def getValidMapping(self, mapping, oldColumns, newColumns):
         validMapping = {}
         for k, v in mapping.items():
-            print(k,v, oldColumns, newColumns)
             if k in oldColumns and v in newColumns:
                 validMapping[k] = v
             else:
@@ -165,8 +166,8 @@ class migrator(object):
             return
         self.local_table.sync(self.table)
         self.local_table.toLegacy()
-        self.table.deleteTableDefinition(False)
-        self.table.setTableDefinition(newTableDef._asdict())
+        self.table.deleteTable(True)
+        self.meta.createTable(newTableDef._asdict(True))
         self.uploadTableFiles()
         self.local_storage.initializeLocalStorage()
         self.local_table.uploadLegacy(self.table, res, force)

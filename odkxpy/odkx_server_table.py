@@ -1,4 +1,5 @@
 from .odkx_server_file import OdkxServerFile
+import ast
 import json
 from collections import namedtuple
 from .odkx_connection import OdkxConnection
@@ -73,15 +74,19 @@ class OdkxServerColumnDefinition(object):
                 return False
         return True
 
-    def _serialization_helper(self):
-        # TODO fix listChildElementKeys
-        return {
+    def _serialization_helper(self, server_compatible: bool = False):
+        colDef = {
             "elementKey": self.elementKey,
             "elementName": self.elementName,
-            "elementType": self.elementType,
-            "properties": self.properties,
-            "listChildElementKeys": [child.elementKey for child in self.childElements]
+            "elementType": self.elementType
         }
+        if server_compatible:
+            colDef['listChildElementKeys'] = str([child.elementKey for child in self.childElements]).replace("'", "\"")
+        else:
+            colDef['listChildElementKeys'] = [child.elementKey for child in self.childElements]
+            colDef['properties'] = self.properties,
+
+        return colDef
 
     def __repr__(self):
         rpr = (' - ' if self.parentElement is not None else '') + 'OdkxServerColumnDefinition' + \
@@ -106,7 +111,7 @@ class OdkxServerTableDefinition():
         self.columns = columns
         self.columnsKeyList = [col.elementKey for col in columns]
 
-    def _asdict(self):
+    def _asdict(self, server_compatible: bool = False):
         """
         dict for serialization
         """
@@ -114,7 +119,7 @@ class OdkxServerTableDefinition():
         json = {}
         json["schemaETag"] = str(self.schemaETag)
         json["tableId"] = self.tableId
-        json["orderedColumns"] = [obj._serialization_helper()
+        json["orderedColumns"] = [obj._serialization_helper(server_compatible)
                                   for obj in self.columns]
         return json
 
@@ -165,18 +170,24 @@ class OdkxServerTableDefinition():
         return OdkxServerTableDefinition(obj["schemaETag"], obj["tableId"],deflist)
 
     @classmethod
-    def _from_DefFile(cls, tableId, data) -> "OdkxServerTableDefinition":
-        data.pop(0)
-        deflist = []
-        # TODO : incomplete TableDefinition; children, parents and properties are not set
-        for col in data:
-            deflist.append(OdkxServerColumnDefinition(*col))
-        return OdkxServerTableDefinition("", tableId, deflist)
+    def _from_DefFile(cls, tableId, colList) -> "OdkxServerTableDefinition":
+        colList.pop(0)
+        cols = {}
+        for c in colList:
+            cd = OdkxServerColumnDefinition(*c)
+            cols[cd.elementKey] = cd
 
+        for c in colList:
+            children = ast.literal_eval(c[-1])
+            parent = cols[c[0]]
+            childcoldefs = []
+            for child in children:
+                cols[child].parentElement = parent
+                childcoldefs.append(cols[child])
+            parent.childElements = childcoldefs
 
-# OdkxServerTableDefinition = namedtuple('OdkxServerTableDefinition', [
-#     'schemaETag', 'tableId', 'orderedColumns', 'selfUri', 'tableUri'
-# ])
+        deflist = [cols[x[0]] for x in colList]
+        return OdkxServerTableDefinition(None, tableId, deflist)
 
 
 class OdkxServerTable(object):
@@ -216,10 +227,16 @@ class OdkxServerTable(object):
         return self.getTableInfo().dataETag
 
     def getTableRoot(self):
-        return "tables/" + self.tableId + "/ref/" + self.schemaETag
+        return "tables/" + self.tableId
+
+    def getTableDefinitionRoot(self):
+        return self.getTableRoot() + "/ref/" + self.schemaETag
+
+    def getTableRessource(self):
+        return self.connection.GET(self.getTableRoot())
 
     def getTableDefinition(self) -> OdkxServerTableDefinition:
-        t_d = self.connection.GET(self.getTableRoot())
+        t_d = self.connection.GET(self.getTableDefinitionRoot())
         col_props = [x for x in self.connection.GET(
             "tables/" + self.tableId + "/properties/2") if x['partition'] == 'Column']
         etag = t_d["schemaETag"]
@@ -246,15 +263,12 @@ class OdkxServerTable(object):
 
         return OdkxServerTableDefinition(etag, t_id, deflist)
 
-    def setTableDefinition(self, json):
-        return self.connection.PUT(self.getTableRoot(), json)
-
     def deleteTable(self, are_you_sure: bool):
         """To delete a table
         """
         if not are_you_sure:
             raise Exception("not sure ?")
-        return self.connection.DELETE(self.getTableRoot())
+        return self.connection.DELETE(self.getTableDefinitionRoot())
 
     def getTableProperties(self):
         return self.connection.GET('tables/' + self.tableId + "/properties/2")
@@ -295,7 +309,7 @@ class OdkxServerTable(object):
     def getDiff(self, dataETag=None, cursor=None, fetchLimit=None) -> OdkxServerTableRowset:
         params = {'data_etag': dataETag,
                   'cursor': cursor, 'fetchLimit': fetchLimit}
-        r = self.connection.GET(self.getTableRoot() + "/diff", params)
+        r = self.connection.GET(self.getTableDefinitionRoot() + "/diff", params)
         return self._parse_rowset(r)
 
     def getAllDataRowsGenerator(self, fetchLimit=None) -> Generator[OdkxServerTableRowset, None, None]:
@@ -304,42 +318,42 @@ class OdkxServerTable(object):
 
     def getAllDataRows(self, cursor=None, fetchLimit=None) -> OdkxServerTableRowset:
         params = {'cursor': cursor, 'fetchLimit': fetchLimit}
-        return self._parse_rowset(self.connection.GET(self.getTableRoot() + "/rows", params))
+        return self._parse_rowset(self.connection.GET(self.getTableDefinitionRoot() + "/rows", params))
 
     def getChangesets(self, dataETag=None, sequence_value=None):
         # Not working - Problem API ?
         # todo refactor after ludovic explains me
         params = {'data_etag': dataETag, 'sequence_value': sequence_value}
-        return self.connection.GET(self.getTableRoot() + "/diff/changeSets", params)
+        return self.connection.GET(self.getTableDefinitionRoot() + "/diff/changeSets", params)
 
     def getChangesetRows(self, dataETag, cursor=None, fetchLimit=None, active_only=None):
         # todo refactor after ludovic explains me
         params = {'active_only': active_only,
                   'cursor': cursor, 'fetchLimit': fetchLimit}
-        return self.connection.GET(self.getTableRoot() + "/diff/changeSets/" + dataETag, params)
+        return self.connection.GET(self.getTableDefinitionRoot() + "/diff/changeSets/" + dataETag, params)
 
     def getDataRow(self, rowId, raw=False):
-        r = self.connection.GET(self.getTableRoot() + "/rows/" + rowId)
+        r = self.connection.GET(self.getTableDefinitionRoot() + "/rows/" + rowId)
         if raw:
             return r
         return self._parse_row(r)
 
     def getAttachmentsManifest(self, rowId):
-        return [OdkxServerFile(**d) for d in self.connection.GET(self.getTableRoot() + "/attachments/" + rowId + "/manifest")['files']]
+        return [OdkxServerFile(**d) for d in self.connection.GET(self.getTableDefinitionRoot() + "/attachments/" + rowId + "/manifest")['files']]
 
     # I GOT HERE REFACTORING
 
     def getAttachment(self, rowId, name, stream, timeout):
         return self.connection.session.get(
             self.connection.server + self.connection.appID + '/' +
-            self.getTableRoot() + "/attachments/" + rowId + "/file/" + name,
+            self.getTableDefinitionRoot() + "/attachments/" + rowId + "/file/" + name,
             stream=stream, timeout=timeout)
 
     def getAttachments(self, rowId, manifest):
         # Not working - TODO
         headers = {"Content-Type": "application/json"}
         return self.connection.session.post(
-            self.connection.server + self.connection.appID + '/' + self.getTableRoot() + "/attachments/" +
+            self.connection.server + self.connection.appID + '/' + self.getTableDefinitionRoot() + "/attachments/" +
             rowId + "/download",
             headers=headers, data=manifest)
 
@@ -347,7 +361,7 @@ class OdkxServerTable(object):
         # Not working - TODO
         headers = {"Content-Type": "application/octet-stream"}
         return self.connection.session.put(
-            self.connection.server + self.connection.appID + '/' + self.getTableRoot() + "/attachments/" +
+            self.connection.server + self.connection.appID + '/' + self.getTableDefinitionRoot() + "/attachments/" +
             rowId + "/file/" + name,
             headers=headers, data=data)
 
@@ -356,14 +370,14 @@ class OdkxServerTable(object):
         # Not working - TODO
         headers = {"Content-Type": "multipart/form-data"}
         return self.connection.session.post(
-            self.connection.server + self.connection.appID + '/' + self.getTableRoot() + "/attachments/" +
+            self.connection.server + self.connection.appID + '/' + self.getTableDefinitionRoot() + "/attachments/" +
             rowId + "/upload",
             headers=headers, data=data)
 
 
     def alterDataRows(self, json):
         """Insert, Update or Delete"""
-        return self.connection.PUT(self.getTableRoot() + "/rows", json)
+        return self.connection.PUT(self.getTableDefinitionRoot() + "/rows", json)
 
     # Manipulate individual records
 
