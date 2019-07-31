@@ -4,11 +4,13 @@ Cache manifest files
 works on https://docs.opendatakit.org/odk-x/odk-2-sync-protocol/#data-grouping-2-rest-synchronization-table-level-files-api
 formDef.json not considered ideal, so try not to rely on
 """
+import sqlalchemy
+
 from .odkx_connection import OdkxConnection
 from .odkx_server_file import OdkxServerFile
-from .local_storage_sql import SqlLocalStorage, CacheNotFoundError
 from typing import List, TYPE_CHECKING, Any, Callable, Optional
-import sqlalchemy
+if TYPE_CHECKING:
+    from .local_storage_sql import SqlLocalStorage
 
 
 def formdef_class(base):
@@ -47,8 +49,8 @@ def properties_class(base):
 
 
 class OdkManifestCache:
-    def __init__(self, storage: SqlLocalStorage, connection: OdkxConnection):
-        self._storage: SqlLocalStorage = storage
+    def __init__(self, storage: "SqlLocalStorage", connection: OdkxConnection):
+        self._storage: "SqlLocalStorage" = storage
         self._connection: OdkxConnection = connection
 
     def _cache_object(self, manifest:OdkxServerFile, orm_def: type, orm_mapper:Callable[[Any], sqlalchemy.ext.declarative.api.DeclarativeMeta], connection_url:str):
@@ -66,7 +68,7 @@ class OdkManifestCache:
     
 
 class OdkTableManifestCache(OdkManifestCache):
-    def __init__(self,session: sqlalchemy.orm.session.Session, storage: SqlLocalStorage, connection: OdkxConnection):
+    def __init__(self,session: sqlalchemy.orm.session.Session, storage: "SqlLocalStorage", connection: OdkxConnection):
         super().__init__(storage, connection)
         self.session = session
         # orm objects and session should be same for caching purposes
@@ -116,6 +118,7 @@ class OdkTableManifestCache(OdkManifestCache):
         filename = f"tables/{tableId}/forms/{formId}/formDef.json"
         obj = self.session.query(self.FormDef).get({"filename":filename})
         if obj is None:
+            from .local_storage_sql import CacheNotFoundError
             raise CacheNotFoundError(
                 f"FormDef, sync manifest files for {tableId} first")
         return obj
@@ -125,6 +128,7 @@ class OdkTableManifestCache(OdkManifestCache):
         """
         formId = self.session.query(self.TableProperties).get({"tableId": tableId})
         if formId is None:
+            from .local_storage_sql import CacheNotFoundError
             raise CacheNotFoundError(
                 f"FormDef, sync manifest files for {tableId} first")
         return formId.survey_formId
