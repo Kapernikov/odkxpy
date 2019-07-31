@@ -27,25 +27,29 @@ class migrator(object):
         - reupload the whole history for compatible columns if a legacy table exist
 
 
-    pathDefFile : path to the definition.csv file
-    pathFile : path to the mapping file (old : new)
+    appRoot : path to the application root directory
+    path : path to the definition.csv file or to an arbitrary file
+    pathMapping : path to the mapping file (old : new)
     """
 
-    def __init__(self, table: OdkxServerTable, pathDefFile: str, local_storage: SqlLocalStorage, pathFile: str = None):
+    def __init__(self, table: OdkxServerTable, local_storage: SqlLocalStorage, appRoot: str, path: str = None, pathMapping: str = None):
         self.table = table
-        self.pathDefFile = pathDefFile
-        self.pathFile = pathFile
         self.local_storage = local_storage
         self.local_table = local_storage.getLocalTable(self.table)
         self.meta = OdkxServerMeta(self.table.connection)
+        self.appRoot = appRoot
+        self.pathAppFiles = self.appRoot + "/app/config/assets/"
+        self.pathTableFiles = self.appRoot + "/app/config/tables/" + self.table.tableId
+        self.path = path if path is not None else self.pathTableFiles + "/definition.csv"
+        self.pathMapping = pathMapping
 
     def getNewTableDefinition(self) -> OdkxServerTableDefinition:
-        with open(self.pathDefFile, newline='') as csvfile:
+        with open(self.pathFile, newline='') as csvfile:
             colList = list(csv.reader(csvfile))
         return OdkxServerTableDefinition._from_DefFile(self.table.tableId, colList)
 
     def getColumnMapping(self):
-        with open(self.pathFile) as file:
+        with open(self.pathMapping) as file:
             mapping = json.load(file)
         return mapping
 
@@ -74,7 +78,7 @@ class migrator(object):
 
 
     def compareTableDef(self, oldTableDef: OdkxServerTableDefinition, newTableDef: OdkxServerTableDefinition):
-        if self.pathFile is not None:
+        if self.pathMapping is not None:
             mapping = self.getColumnMapping()
             validMapping = self.getValidMapping(mapping, oldTableDef.columnsKeyList, newTableDef.columnsKeyList)
             if validMapping:
@@ -126,19 +130,28 @@ class migrator(object):
                 allFiles.append(fullPath)
         return allFiles
 
-    def putFiles(self, mode, option=None):
+    def putFiles(self, mode: str):
+        """Upload files to the OdkxServer
+
+           mode :
+                [app] for putting application files
+                [file] to put exactly one file
+                [table] to put table files
+        """
         if mode == "app":
             print("Putting global files")
-            localFiles = self.getListOfFiles(f".")
+            localFiles = self.getListOfFiles(self.pathAppFiles)
         elif mode == "file":
             print("Putting one file : {path}".format(path=self.path))
             localFiles = [self.path]
-        else:
+        elif (mode == "table") or (mode == "table_html_js"):
             print("Putting table files : {tableId}".format(tableid=self.table.tableId))
-            localFiles = self.getListOfFiles("tables/{tableId}".format(tableid=self.table.tableId))
+            localFiles = self.getListOfFiles(self.pathTableFiles)
+        else:
+            raise Exception("Unrecognized mode")
 
         for f in localFiles:
-            if option != "assets" or (f.split('.')[-1] in ['html', 'js']):
+            if mode != "table_html_js" or (f.split('.')[-1] in ['html', 'js']):
                 print("uploading: " + f)
                 fhandle = open(f, "rb")
                 data = fhandle.read()
@@ -149,13 +162,9 @@ class migrator(object):
                         ctype = v
                 if mode == "app":
                     self.meta.putFile(ctype, data, f)
-                    pass
                 else:
-                    el = f[len('tables/{tableId}/'.format(tableid=self.table.tableId)):]
+                    el = f[len(self.pathTableFiles)):]
                     self.table.putFile(ctype, data, el)
-
-    def uploadTableFiles(self):
-        self.putFiles("table")
 
     def migrate(self, force=False):
         newTableDef = self.getNewTableDefinition()
@@ -168,6 +177,6 @@ class migrator(object):
         self.local_table.toLegacy()
         self.table.deleteTable(True)
         self.meta.createTable(newTableDef._asdict(True))
-        self.uploadTableFiles()
+        self.putFiles("table")
         self.local_storage.initializeLocalStorage()
         self.local_table.uploadLegacy(self.table, res, force)
