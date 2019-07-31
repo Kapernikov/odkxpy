@@ -53,7 +53,7 @@ class OdkManifestCache:
         self._storage: "SqlLocalStorage" = storage
         self._connection: OdkxConnection = connection
 
-    def _cache_object(self, manifest:OdkxServerFile, orm_def: type, orm_mapper:Callable[[Any], sqlalchemy.ext.declarative.api.DeclarativeMeta], connection_url:str):
+    def _cache_object(self, manifest:OdkxServerFile, orm_def: type, orm_mapper:Callable[[Any], Any], connection_url:str):
         #table could not exist
         orm_def.__table__.create(bind=self._storage.engine, checkfirst=True)
 
@@ -68,7 +68,7 @@ class OdkManifestCache:
     
 
 class OdkTableManifestCache(OdkManifestCache):
-    def __init__(self,session: sqlalchemy.orm.session.Session, storage: "SqlLocalStorage", connection: OdkxConnection):
+    def __init__(self,session: "sqlalchemy.orm.session.Session", storage: "SqlLocalStorage", connection: OdkxConnection):
         super().__init__(storage, connection)
         self.session = session
         # orm objects and session should be same for caching purposes
