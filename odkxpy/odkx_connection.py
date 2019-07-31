@@ -23,7 +23,7 @@ class OdkxConnection(object):
         logging.debug("HTTP status: \033[92m[" + str(response.status_code) + ']\033[0m - ' + response.url)
         if (response.status_code == 200) and response.text:
             output = response.json()
-        elif response.status_code == 200:
+        elif str(response.status_code).startswith("2"):
             output = response
         else:
             output = response.content
@@ -48,14 +48,12 @@ class OdkxConnection(object):
         return self.treatResponse(response)
 
     def POST(self, url, data, headers=None):
-        h_= {}
+        h= {}
         if headers:
             h.update(headers)
         response = self.session.post(self.server + self.appID + '/' + url
-            , headers=headers,
-            data=data)
+            , headers=headers, data=data)
         return self.treatResponse(response)
 
     def DELETE(self, url):
         return self.treatResponse(self.session.delete(self.server + self.appID+'/'+url))
-

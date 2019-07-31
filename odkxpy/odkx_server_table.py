@@ -81,6 +81,7 @@ class OdkxServerColumnDefinition(object):
             "elementType": self.elementType
         }
         if server_compatible:
+            # If we don't do that, it creates a bug on the server blocking the tableId namespace. --> or we do a double json.dump() call
             colDef['listChildElementKeys'] = str([child.elementKey for child in self.childElements]).replace("'", "\"")
         else:
             colDef['listChildElementKeys'] = [child.elementKey for child in self.childElements]
@@ -201,14 +202,26 @@ class OdkxServerTable(object):
         self.tableId = tableId
         self.schemaETag = schemaETag
 
+    def getTableRoot(self):
+        return "tables/" + self.tableId
+
+    def getTableDefinitionRoot(self):
+        return self.getTableRoot() + "/ref/" + self.schemaETag
+
+    def getTableFilesRoot(self):
+        return 'files/2/tables/' + self.tableId
+
+    def _safePath(self, path):
+        return ('' if path.startswith('/') else '/') + path
+
     def getTableInfo(self) -> OdkxServerTableInfo:
-        return OdkxServerTableInfo(**self.connection.GET('tables/' + self.tableId))
+        return OdkxServerTableInfo(**self.connection.GET(self.getTableRoot()))
 
     def getFileManifest(self) -> List[OdkxServerFile]:
         return [OdkxServerFile(**x) for x in self.connection.GET("manifest/2/" + self.tableId)['files']]
 
     def getFile(self, path):
-        return self.connection.GET('files/2/tables/' + self.tableId + ('' if path.startswith('/') else '/') + path)
+        return self.connection.GET(self.getTableFilesRoot() + self._safePath(path))
 
     def putFile(self, content_type, payload, path):
         headers = {"Content-Type": content_type}
@@ -216,24 +229,13 @@ class OdkxServerTable(object):
             payload = json.dumps(payload).encode('utf-8')
         if type(payload) == str:
             payload = payload.encode('utf-8')
-        return self.connection.POST('/files/2/tables/' + self.tableId + ('' if path.startswith('/') else '/') + path,
-                                    headers=headers, data=payload)
+        return self.connection.POST(self.getTableFilesRoot() + self._safePath(path), headers=headers, data=payload)
 
     def deleteFile(self, path):
-        return self.connection.DELETE('files/2/tables/' + self.tableId + (
-            '' if path.startswith('/') else '/') + path)
+        return self.connection.DELETE(self.getTableFilesRoot() + self._safePath(path))
 
     def getdataETag(self):
         return self.getTableInfo().dataETag
-
-    def getTableRoot(self):
-        return "tables/" + self.tableId
-
-    def getTableDefinitionRoot(self):
-        return self.getTableRoot() + "/ref/" + self.schemaETag
-
-    def getTableRessource(self):
-        return self.connection.GET(self.getTableRoot())
 
     def getTableDefinition(self) -> OdkxServerTableDefinition:
         t_d = self.connection.GET(self.getTableDefinitionRoot())

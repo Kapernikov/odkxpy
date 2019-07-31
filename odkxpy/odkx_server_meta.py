@@ -47,6 +47,14 @@ class OdkxServerMeta(object):
     def getTables(self):
         return [ OdkxServerTable(self.connection, x['tableId'], x['schemaETag']) for x in  self.connection.GET("tables")['tables'] ]
 
+    def getTable(self, tableId: str):
+        table = next((table for table in self.getTables() if table.tableId == tableId), None)
+        if table:
+            return table
+        else:
+            tableList = [ tb.tableId for tb in self.getTables()]
+            raise Exception("Unknown table. Not found in :" + str(tableList))
 
     def createTable(self, json):
         return self.connection.PUT("tables/" + json["tableId"], json)
+

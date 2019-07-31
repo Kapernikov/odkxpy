@@ -644,19 +644,31 @@ class OdkxLocalTable(object):
 
     def _getLegacyBatch(self, localTable: str, state, force_push: bool = False):
         genericCols = ['id', 'rowETag', 'savepointTimestamp', 'dataETagAtModification', 'savepointCreator', 'formId', 'savepointType', 'lastUpdateUser']
-        mappedCols = [col + ' as ' + self.res['validMapping'][col] for col in self.res['validMapping'].keys()]
-        unchangedCols = [col for col in self.res['common'] if col not in self.res['validMapping'].values()]
-        colsToTake = genericCols + mappedCols + unchangedCols
+
+        if self.res is not None:
+            mappedCols = [col + ' as ' + self.res['mapping'][col] for col in self.res['mapping'].keys()]
+            unchangedCols = [col for col in self.res['common'] if col not in self.res['mapping'].values()]
+            colsToTake = genericCols + mappedCols + unchangedCols
+        else:
+            with self.engine.begin() as c:
+                res = c.execute("""SELECT column_name FROM information_schema.columns
+                             WHERE table_schema = '{schema}' AND table_name = '{table}';
+                          """.format(schema=self.schema, table=localTable))
+                columns = res.fetchall()
+            columns = {}
+            for col in columns:
+                columns.append(col[0])
+            colsToTake = genericCols + [col for col in columns if col not in genericCols.extend("state")]
 
         if force_push:
             # take row ETag directly from server, making push always work even if we updated old data
             # it can still conflict but now only because somebody uploaded between us pulling and us pushing
             colsToTake = [x for x in colsToTake if x not in ['rowETag']]
 
-        qry = "SELECT {col_list} FROM {schema}.{loctable} WHERE state in ({state})".format(
+        qry = """SELECT "{col_list}" FROM {schema}.{loctable} WHERE state in ({state})""".format(
             schema=self.schema,
             loctable=localTable,
-            col_list=','.join(colsToTake),
+            col_list='", "'.join(colsToTake),
             state=','.join(["'" + x + "'" for x in state])
         )
         return qry
@@ -710,18 +722,24 @@ class OdkxLocalTable(object):
                      """.format(schema=self.schema, tableId=self.tableId, legacy_nb=newLegacyNb))
         self._addStateColumn("_legacy_" + str(newLegacyNb) + "_" + self.tableId + "_log")
 
-    def uploadLegacy(self, remoteTable: OdkxServerTable, res, force_push: bool = False):
+    def uploadLegacy(self, remoteTable: OdkxServerTable, res: dict = None, force_push: bool = False, specific_table: str = None):
         #  Calculate the order of history via the timestamp (we don't have historization with the ETag, only on the server)
         """ Sync by batch using the history with only unique occurence of row id's
         """
         if self._checkIfLegacy():
-            lastLegacyNb = self._checkLastLegacyNb()
             self.res = res
-            legacy_prefix = "_legacy_" + str(lastLegacyNb) + "_"
-            table = legacy_prefix + self.tableId + "_log"
+            if specific_table is None:
+                lastLegacyNb = self._checkLastLegacyNb()
+                legacy_prefix = "_legacy_" + str(lastLegacyNb) + "_"
+                table = legacy_prefix + self.tableId + "_log"
+            else:
+                legacy_prefix = specific_table.split(self.tableId)[0]
+                table = specific_table
+            print('--> Importing legacy table: ', table)
             # sequence = remoteTable.getChangeSets(dataETag=self.getInitialDataETag)  TODO: enable this when fixed in the sync endpoint https://forum.opendatakit.org/t/get-changesets-api-from-the-odk-x-sync-protocol/21084/2
             sequence = self._constructSequence(table)
             for dataETag in sequence:
-                if not self.checkIfPreparedUpload():
+                print('--> Pushing changes with dataETag: ', dataETag)
+                if not self._checkIfPreparedUpload(table):
                     self._prepareUpload(dataETag, table)
                 self._sync_iter_push(remoteTable, legacy_prefix, force_push=force_push)

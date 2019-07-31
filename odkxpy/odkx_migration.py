@@ -26,27 +26,25 @@ class migrator(object):
         - initialize the table with the new table definition
         - reupload the whole history for compatible columns if a legacy table exist
 
-
     appRoot : path to the application root directory
-    path : path to the definition.csv file or to an arbitrary file
-    pathMapping : path to the mapping file (old : new)
+    path : path to the definition.csv file or to an arbitrary file (relative to appRoot)
+    pathMapping : path to the mapping file (old : new) (relative to appRoot)
     """
 
-    def __init__(self, table: OdkxServerTable, local_storage: SqlLocalStorage, appRoot: str, path: str = None, pathMapping: str = None):
-        self.table = table
+    def __init__(self, tableId, meta: OdkxServerMeta, local_storage: SqlLocalStorage, appRoot: str, path: str = None, pathMapping: str = None):
+        self.tableId = tableId
+        self.meta = meta
         self.local_storage = local_storage
-        self.local_table = local_storage.getLocalTable(self.table)
-        self.meta = OdkxServerMeta(self.table.connection)
         self.appRoot = appRoot
         self.pathAppFiles = self.appRoot + "/app/config/assets/"
-        self.pathTableFiles = self.appRoot + "/app/config/tables/" + self.table.tableId
-        self.path = path if path is not None else self.pathTableFiles + "/definition.csv"
-        self.pathMapping = pathMapping
+        self.pathTableFiles = self.appRoot + "/app/config/tables/" + self.tableId
+        self.path = self.appRoot + "/" + path if path is not None else self.pathTableFiles + "/definition.csv"
+        self.pathMapping = self.appRoot + "/" + pathMapping
 
     def getNewTableDefinition(self) -> OdkxServerTableDefinition:
-        with open(self.pathFile, newline='') as csvfile:
+        with open(self.path, newline='') as csvfile:
             colList = list(csv.reader(csvfile))
-        return OdkxServerTableDefinition._from_DefFile(self.table.tableId, colList)
+        return OdkxServerTableDefinition._from_DefFile(self.tableId, colList)
 
     def getColumnMapping(self):
         with open(self.pathMapping) as file:
@@ -145,7 +143,7 @@ class migrator(object):
             print("Putting one file : {path}".format(path=self.path))
             localFiles = [self.path]
         elif (mode == "table") or (mode == "table_html_js"):
-            print("Putting table files : {tableId}".format(tableid=self.table.tableId))
+            print("Putting table files : {tableId}".format(tableId=self.tableId))
             localFiles = self.getListOfFiles(self.pathTableFiles)
         else:
             raise Exception("Unrecognized mode")
@@ -163,20 +161,29 @@ class migrator(object):
                 if mode == "app":
                     self.meta.putFile(ctype, data, f)
                 else:
-                    el = f[len(self.pathTableFiles)):]
+                    el = f[len(self.pathTableFiles):]
                     self.table.putFile(ctype, data, el)
 
+    def rebuildTable(self, force=False):
+        newTableDef = self.getNewTableDefinition()
+        self.meta.createTable(newTableDef._asdict(True))
+        # We update the info on the current loaded table in the migrator
+        self.table = self.meta.getTable(newTableDef.tableId)
+        self.putFiles("table")
+        self.local_storage.initializeLocalStorage(self.table)
+
     def migrate(self, force=False):
+        self.table = self.meta.getTable(self.tableId)
         newTableDef = self.getNewTableDefinition()
         oldTableDef = self.table.getTableDefinition()
         res = self.compareTableDef(oldTableDef, newTableDef)
         if res['incompat'] and not force:
             print("The migration was aborted")
             return
+        self.local_table = self.local_storage.getLocalTable(self.table)
         self.local_table.sync(self.table)
         self.local_table.toLegacy()
         self.table.deleteTable(True)
-        self.meta.createTable(newTableDef._asdict(True))
-        self.putFiles("table")
-        self.local_storage.initializeLocalStorage()
-        self.local_table.uploadLegacy(self.table, res, force)
+        self.rebuildTable(force)
+        self.local_table = self.local_storage.getLocalTable(self.table)
+        self.local_table.uploadLegacy(self.table, res=res, force_push=force)
