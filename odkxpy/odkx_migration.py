@@ -164,7 +164,7 @@ class migrator(object):
                     el = f[len(self.pathTableFiles):]
                     self.table.putFile(ctype, data, el)
 
-    def rebuildTable(self, force=False):
+    def createRemoteAndLocalTable(self, force=False):
         newTableDef = self.getNewTableDefinition()
         self.meta.createTable(newTableDef._asdict(True))
         # We update the info on the current loaded table in the migrator
@@ -184,6 +184,11 @@ class migrator(object):
         self.local_table.sync(self.table)
         self.local_table.toLegacy()
         self.table.deleteTable(True)
-        self.rebuildTable(force)
+        self.createRemoteAndLocalTable(force)
         self.local_table = self.local_storage.getLocalTable(self.table)
         self.local_table.uploadLegacy(self.table, res=res, force_push=force)
+
+    def uploadLegacyTable(self, table, force=False):
+        self.table = self.meta.getTable(self.tableId)
+        self.local_table = self.local_storage.getLocalTable(self.table)
+        self.local_table.uploadLegacy(self.table, specific_table=table, force_push=force)

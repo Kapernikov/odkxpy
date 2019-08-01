@@ -362,7 +362,7 @@ class OdkxServerTable(object):
     def putAttachment(self, rowId, name, data):
         # Not working - TODO
         headers = {"Content-Type": "application/octet-stream"}
-        return self.connection.session.put(
+        return self.connection.session.post(
             self.connection.server + self.connection.appID + '/' + self.getTableDefinitionRoot() + "/attachments/" +
             rowId + "/file/" + name,
             headers=headers, data=data)

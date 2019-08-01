@@ -1,5 +1,6 @@
 import sqlalchemy
 from .odkx_server_table import OdkxServerTable, OdkxServerTableRow, OdkxServerTableColumn, OdkxServerColumnDefinition, OdkxServerTableDefinition
+from .odkx_local_file import OdkxLocalFile
 from sqlalchemy import MetaData, text
 import os
 from typing import Optional, List
@@ -32,8 +33,12 @@ class FilesystemAttachmentStore(object):
     def hasFile(self, id, filename):
         return os.path.isfile(self.getFileName(id, filename))
 
-    def open(self, id, filename):
-        return open(self.getFileName(id, filename), 'rb')
+    def openLocalFile(self, id, filename):
+        filename = os.path.join(self.path, id, filename)
+        #with open(filename, 'rb') as file_:
+        #    file_data = file_.read()
+        #return file_data
+        return open(filename, 'rb')
 
     def getMD5(self, id, filename):
         hash_md5 = hashlib.md5()
@@ -58,8 +63,11 @@ class FilesystemAttachmentStore(object):
 
     def getManifest(self, id) -> List[str]:
         pathDir = os.path.join(self.path, self.okWindows(id))
-        listFilDir = os.listdir(pathdir)
-        return [OdkxLocalFile({'filename':f, 'md5hash': self.getMD5(id,f)}) for f in listFilDir if os.path.isfile(os.path.join(pathDir, f))]
+        if os.path.isdir(pathDir):
+            listFilDir = os.listdir(pathDir)
+        else:
+            listFilDir = []
+        return [OdkxLocalFile(**{'filename':f, 'md5hash': self.getMD5(id,f)}) for f in listFilDir if os.path.isfile(os.path.join(pathDir, f))]
 
 
 class OdkxLocalTable(object):
@@ -169,15 +177,19 @@ class OdkxLocalTable(object):
         return True
 
     def uploadAttachments(self, remoteTable: OdkxServerTable, rowId: str, target_file_list: List[str]):
+        """We don't check what is on the OdkxServer as the manifest should be empty in a legacy mode
+        """
         got_files = []
         remoteManifest = remoteTable.getAttachmentsManifest(rowId)
         for f in self.attachments.getManifest(rowId):
             got_files.append(f.filename)
-            remoteFileProperties = next((x for x in remoteManifest if x.filename == f.filename), None)
-            if remoteFileProperties:
-                if remoteFileProperties.md5hash == f.md5hash:
-                    continue
-            remoteTable.putAttachment(rowId, f.filename, self.attachments.open(rowId, f.filename))
+            #remoteFileProperties = next((x for x in remoteManifest if x.filename == f.filename), None)
+            #if remoteFileProperties:
+            #    if remoteFileProperties.md5hash == f.md5hash:
+            #        continue
+            print(rowId, f.filename)
+            res = remoteTable.putAttachment(rowId, f.filename, self.attachments.openLocalFile(rowId, f.filename))
+            print(res)
 
         missing_files = [x for x in target_file_list if x not in got_files]
         if len(missing_files) > 0:
@@ -193,14 +205,25 @@ class OdkxLocalTable(object):
     def _sync_attachments(self, remoteTable: OdkxServerTable, local_changes_prefix: str = None):
         """ Sync the attachments for the rowids in state "sync_attachments"
         """
+        attach_cols = [x.elementKey for x in self.getTableDefinition().columns if x.elementType == 'rowpath']
+
         if local_changes_prefix:
             mode = "pushing"
-            table = self.tableId + "_" + local_changes_prefix
+            if not local_changes_prefix.startswith("_legacy_"):
+                table = self.tableId + "_" + local_changes_prefix
+            else:
+                table = local_changes_prefix + self.tableId + "_log"
+                with self.engine.begin() as c:
+                    res = c.execute("""SELECT column_name FROM information_schema.columns
+                                 WHERE table_schema = '{schema}' AND table_name = '{table}'
+                                 AND column_name LIKE '%%_uriFragment';
+                              """.format(schema=self.schema, table=table))
+                    resColumns = res.fetchall()
+                attach_cols = [col[0] for col in resColumns]
         else:
             mode = "pulling"
             table = self.tableId
 
-        attach_cols = [x.elementKey for x in self.getTableDefinition().columns if x.elementType == 'rowpath']
         if len(attach_cols) == 0:
             return
         ids = []
@@ -318,19 +341,24 @@ class OdkxLocalTable(object):
         if (self.hasUnresolvedConflicts(localTable)):
             raise Exception("unresolved conflicts, cannot push changes")
 
+        records = []
         if not local_changes_prefix.startswith("_legacy_"):
             state_qry = self._qryState(localTable, tableDefinition=definition, state=['new', 'modified'], force_push=force_push)
+            with self.engine.connect() as c:
+                for row in c.execute(state_qry):
+                    records.append(self.row2rec(row, definition, remoteTable.connection.user))
+                    dataETag = self.getLocalDataETag()
         else:
             state_qry = self._getLegacyBatch(localTable, state=['legacyUpload'], force_push=force_push)
+            with self.engine.connect() as c:
+                for row in c.execute(state_qry):
+                    records.append(self.row2rec(row, definition, remoteTable.connection.user, full=False))
+                    dataETag = remoteTable.getdataETag()
 
-        records = []
-        with self.engine.connect() as c:
-            for row in c.execute(state_qry):
-                records.append(self.row2rec(row, definition, remoteTable.connection.user))
-        json = {'rows': records, 'dataETag': self.getLocalDataETag()}
         if (len(records) == 0):
             return None
-        #  return json
+        json = {'rows': records, 'dataETag': dataETag}
+
         rs = remoteTable.alterDataRows(json)
         for outcome in rs['rows']:
             if outcome['outcome'] == 'IN_CONFLICT':
@@ -357,16 +385,18 @@ class OdkxLocalTable(object):
                 ids=','.join(["'{c}'".format(c=c) for c in chunk])
             )
             with self.engine.begin() as c:
+                print(qry)
                 c.execute(qry)
         if not no_attachments:
-            self._sync__attachments(remoteTable, local_changes_prefix)
+            self._sync_attachments(remoteTable, local_changes_prefix)
 
-    def row2rec(self,row: dict, definition: List[OdkxServerColumnDefinition], default_user: str):
+    def row2rec(self,row: dict, definition: List[OdkxServerColumnDefinition], default_user: str, full: bool = True):
         datacols = [x.elementKey for x in definition if x.isMaterialized()]
         ## TODO refactor
-        for c in datacols:
-            if not c in row.keys():
-                raise Exception("schema's have diverged: on ODKX server i got column {c} but i couldn't find it locally. please fix.".format(c=c))
+        if full:
+           for c in datacols:
+               if not c in row.keys():
+                   raise Exception("schema's have diverged: on ODKX server i got column {c} but i couldn't find it locally. please fix.".format(c=c))
         tupColAccess = ('defaultAccess',  'groupModify', 'groupPrivileged', 'groupReadOnly', 'rowOwner')
         tupColnames = tuple(datacols)
         filterScope = {}
@@ -377,7 +407,11 @@ class OdkxLocalTable(object):
             else:
                 filterScope[c] = row[c]
         for c in tupColnames:
-            orderedColumns.append({'column':c,'value':row[c]})
+            if full:
+                orderedColumns.append({'column':c,'value':row[c]})
+            else:
+                if c in row.keys():
+                    orderedColumns.append({'column':c,'value':row[c]})
 
         result = {}
         result['filterScope'] = filterScope
@@ -617,6 +651,60 @@ class OdkxLocalTable(object):
             """.format(schema=self.schema, def_tn=def_tn, stagingtable=staging_tn, w=w))
         self._copyMissingData(staging_tn, def_tn)
 
+    def localSyncFromLegacyTable(self, table: str):
+        """
+        """
+
+        staging_tn = table + '_staging'
+        def_tn = table
+        self._copyMissingData(self.tableId, def_tn)
+        self.fillHashColumn(def_tn)
+
+        if (self.hasPendingLocalChanges(source_prefix)):
+            raise Exception("unsynced local changes still pending. sync first")
+
+
+        qry = """
+            UPDATE {schema}."{stagingtable}" set id = {schema}."{realtable}".id, state='modified', "rowETag" = {schema}."{realtable}"."rowETag"
+            FROM {schema}."{realtable}" WHERE {schema}."{stagingtable}"."{extid}" = {schema}."{realtable}"."{extid}"
+        """
+        with self.engine.begin() as c:
+            c.execute("update {schema}.{stagingtable} set state=null".format(schema=self.schema, stagingtable=staging_tn))
+            c.execute("update {schema}.{stagingtable} set deleted=False where deleted is null".format(schema=self.schema, stagingtable=staging_tn))
+            c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=def_tn, extid=external_id_column))
+            c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=self.tableId, extid=external_id_column))
+
+        self.fillHashColumn(staging_tn)
+        qry = """
+            UPDATE {schema}."{stagingtable}" set "rowETag" = {schema}."{realtable}"."rowETag", state='unchanged'
+            FROM {schema}."{realtable}" WHERE {schema}."{stagingtable}".id = {schema}."{realtable}".id AND 
+            {schema}."{stagingtable}".hash = {schema}."{realtable}".hash
+        """
+        with self.engine.begin() as c:
+            c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=def_tn))
+            c.execute("""update {schema}."{stagingtable}" set state='new', "createUser" = 'localSync'
+                        where state is null""".format(schema=self.schema, stagingtable=staging_tn))
+            c.execute("""update {schema}."{stagingtable}" set "savepointTimestamp"=now(), 
+                        "savepointCreator"='localSync', 
+                        "savepointType"='COMPLETE',
+                        "formId"='localSync',
+                        "lastUpdateUser"='localSync'
+                        where state in ('new', 'modified')""".format(schema=self.schema, stagingtable=staging_tn))
+            c.execute("""update {schema}."{stagingtable}" set "dataETagAtModification"='{etag}' where state in ('new', 'modified')""".format(schema=self.schema, stagingtable=staging_tn, etag=self.getLocalDataETag()))
+
+        self._fillUUIDs(staging_tn, 'id')
+        self._fillUUIDs(staging_tn, 'rowETag')
+
+        with self.engine.begin() as c:
+            w = ""
+            if localSyncMode == LocalSyncMode.ONLY_NEW_RECORDS:
+                w = " WHERE state in ('new') "
+            if localSyncMode == LocalSyncMode.ONLY_EXISTING_RECORDS:
+                w = " WHERE state in ('modified') "
+            c.execute("""delete from {schema}."{def_tn}" where {schema}."{def_tn}".id in (select {schema}."{stagingtable}".id from {schema}."{stagingtable}" {w}) 
+            """.format(schema=self.schema, def_tn=def_tn, stagingtable=staging_tn, w=w))
+        self._copyMissingData(staging_tn, def_tn)
+
     def _checkIfLegacy(self):
         """ check legacy tables exist
         """
@@ -654,11 +742,8 @@ class OdkxLocalTable(object):
                 res = c.execute("""SELECT column_name FROM information_schema.columns
                              WHERE table_schema = '{schema}' AND table_name = '{table}';
                           """.format(schema=self.schema, table=localTable))
-                columns = res.fetchall()
-            columns = {}
-            for col in columns:
-                columns.append(col[0])
-            colsToTake = genericCols + [col for col in columns if col not in genericCols.extend("state")]
+                resColumns = res.fetchall()
+            colsToTake = [col[0] for col in resColumns if col[0] != "state"]
 
         if force_push:
             # take row ETag directly from server, making push always work even if we updated old data
@@ -677,15 +762,20 @@ class OdkxLocalTable(object):
         with self.engine.begin() as c:
             res = c.execute("""SELECT * FROM {schema}.{table} WHERE "state" = 'uploadLegacy'
                       """.format(schema=self.schema, table=table))
-            if not res.rowcount > 0:
+            if res.rowcount == 0:
                 return False
             else:
+                print('--> Already records prepared to be pushed: ', res.rowcount)
                 return True
 
     def _prepareUpload(self, dataETag, table):
         with self.engine.begin() as c:
-            c.execute("""UPDATE {schema}.{table} SET state = 'legacyUpload' WHERE {table}."dataETagAtModification" = '{dataETag}' AND {table}."state" != 'sync_attachments';
+            res = c.execute("""UPDATE {schema}.{table} SET state = 'legacyUpload' WHERE {table}."dataETagAtModification" = '{dataETag}'
+                         AND {table}."state" is distinct from 'sync_attachments'
+                         AND {table}."state" is distinct from 'synced'
+                         AND {table}."state" is distinct from 'conflict';
                       """.format(schema=self.schema, table=table, dataETag=dataETag))
+            print('--> Preparing to push records: ', res.rowcount)
 
     def _constructSequence(self, table):
         seq = []
@@ -743,3 +833,4 @@ class OdkxLocalTable(object):
                 if not self._checkIfPreparedUpload(table):
                     self._prepareUpload(dataETag, table)
                 self._sync_iter_push(remoteTable, legacy_prefix, force_push=force_push)
+                self._sync_attachments(remoteTable, legacy_prefix)
