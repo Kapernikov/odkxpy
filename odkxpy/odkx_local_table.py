@@ -1,6 +1,7 @@
 import sqlalchemy
 from .odkx_server_table import OdkxServerTable, OdkxServerTableRow, OdkxServerTableColumn, OdkxServerColumnDefinition, OdkxServerTableDefinition
 from .odkx_local_file import OdkxLocalFile
+from .odkx_manifest_cache import OdkTableManifestCache
 from sqlalchemy import MetaData, text
 import os
 from typing import Optional, List
@@ -425,6 +426,12 @@ class OdkxLocalTable(object):
                 result[k] = row[k]
         return result
 
+    def _cache_manifest(self, remoteTable: OdkxServerTable):
+        with self._storage.local_session_scope() as session:
+            OdkTableManifestCache(session, self._storage, remoteTable.connection).do_sync(
+                self.tableId, remoteTable.getFileManifest()
+            )
+
     def sync(self, remoteTable: OdkxServerTable, local_changes_prefix: Optional[str] = None, force_push: bool = False, no_attachments: bool = False):
         """
 
@@ -434,6 +441,7 @@ class OdkxLocalTable(object):
         :param no_attachments: ignore the attachments for now (the rows will remain in sync_attachments state, so they will be synced next time when you don't pass no_attachments)
         :return:
         """
+        self._cache_manifest(remoteTable)
         self._sync_iter_pull(remoteTable)
         if local_changes_prefix is not None:
             self._sync_iter_push(remoteTable, local_changes_prefix, force_push=force_push, no_attachments=no_attachments)
