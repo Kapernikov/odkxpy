@@ -110,7 +110,7 @@ class OdkxServerTableDefinition():
         self.schemaETag = schemaETag
         self.tableId = tableId
         self.columns = columns
-        self.columnsKeyList = [col.elementKey for col in columns]
+        self.columnsKeyList = [col.elementKey for col in columns if col.isMaterialized()]
 
     def _asdict(self, server_compatible: bool = False):
         """

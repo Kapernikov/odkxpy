@@ -34,6 +34,7 @@ class migrator(object):
     def __init__(self, tableId, meta: OdkxServerMeta, local_storage: SqlLocalStorage, appRoot: str, path: str = None, pathMapping: str = None):
         self.tableId = tableId
         self.meta = meta
+        self.table = self.meta.getTable(self.tableId)
         self.local_storage = local_storage
         self.appRoot = appRoot
         self.pathAppFiles = self.appRoot + "/app/config/assets/"
@@ -53,11 +54,16 @@ class migrator(object):
 
     def getValidMapping(self, mapping, oldColumns, newColumns):
         validMapping = {}
+        print("\nReport on the mapping: ")
+        print("=========================")
         for k, v in mapping.items():
             if k in oldColumns and v in newColumns:
                 validMapping[k] = v
             else:
                 print(f"Unknown column:{k} or {v}")
+
+        print("\n Valid mapping \n")
+        print(validMapping)
         return validMapping
 
     def checkColumnsType(self, common, oldTableDef: OdkxServerTableDefinition, newTableDef: OdkxServerTableDefinition, validMapping):
@@ -164,31 +170,34 @@ class migrator(object):
                     el = f[len(self.pathTableFiles):]
                     self.table.putFile(ctype, data, el)
 
+    def migrateReport(self):
+        newTableDef = self.getNewTableDefinition()
+        oldTableDef = self.table.getTableDefinition()
+        return self.compareTableDef(oldTableDef, newTableDef)
+
     def createRemoteAndLocalTable(self, force=False):
         newTableDef = self.getNewTableDefinition()
         self.meta.createTable(newTableDef._asdict(True))
         # We update the info on the current loaded table in the migrator
         self.table = self.meta.getTable(newTableDef.tableId)
         self.putFiles("table")
-        self.local_storage.initializeLocalStorage(self.table)
+
+    def uploadLegacyTable(self, table=None, res=None, force=False):
+        self.local_table = self.local_storage.getLocalTable(self.table)
+        if self.local_table._checkIfLegacy():
+            self.local_table.uploadLegacy(self.table, specific_table=table, res=res, force_push=force)
 
     def migrate(self, force=False):
-        self.table = self.meta.getTable(self.tableId)
-        newTableDef = self.getNewTableDefinition()
-        oldTableDef = self.table.getTableDefinition()
-        res = self.compareTableDef(oldTableDef, newTableDef)
+        res = self.migrateReport()
         if res['incompat'] and not force:
             print("The migration was aborted")
             return
         self.local_table = self.local_storage.getLocalTable(self.table)
         self.local_table.sync(self.table)
-        self.local_table.toLegacy()
+        with self.local_storage.engine.begin() as trans:
+            self.local_table.toLegacy(trans)
+            self.local_table.updateLocalStatusDb(None, trans)
         self.table.deleteTable(True)
         self.createRemoteAndLocalTable(force)
-        self.local_table = self.local_storage.getLocalTable(self.table)
-        self.local_table.uploadLegacy(self.table, res=res, force_push=force)
-
-    def uploadLegacyTable(self, table, force=False):
-        self.table = self.meta.getTable(self.tableId)
-        self.local_table = self.local_storage.getLocalTable(self.table)
-        self.local_table.uploadLegacy(self.table, specific_table=table, force_push=force)
+        self.uploadLegacyTable(res=res, force=force)
+        self.local_table.sync(self.table)
