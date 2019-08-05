@@ -213,17 +213,27 @@ class migrator(object):
         self.local_table = self.local_storage.getLocalTable(self.table)
         self.local_table.uploadHistoryTable(self.table, localTable=table, res=res, force_push=force)
 
-    def migrate(self, force=False):
+    def migrate(self, force=False, deleteOldTable=False):
         res = self.migrateReport()
         if res['incompat'] and not force:
             print("The migration was aborted")
             return
         self.local_table = self.local_storage.getLocalTable(self.table)
         self.local_table.sync(self.table)
+        oldStorePath = self.local_table.attachments.path
+
         with self.local_storage.engine.begin() as trans:
             self.local_table.toHistory(trans)
             self.local_table.updateLocalStatusDb(None, trans)
-        self.table.deleteTable(True)
+        if deleteOldTable:
+            self.table.deleteTable(True)
+        else:
+            if self.tableId == self.table.tableId:
+                raise Exception("The namespace of the table defined in the new table definition is already used.\
+                                \nIf you want to continue, please use deleteOldTable=True")
         self.createRemoteAndLocalTable(force)
+        if self.tableId != self.table.tableId:
+            self.local_table.attachments.copyLocalFiles(oldStorePath)
+
         self.uploadHistoryTable(res=res, force=force)
         self.local_table.sync(self.table)

@@ -7,10 +7,10 @@ import os
 from typing import Optional, List
 import hashlib
 import requests
-import logging
 import datetime
 import pandas as pd
 from enum import Enum
+from distutils.dir_util import copy_tree
 
 class LocalSyncMode(Enum):
     FULL = 1
@@ -69,6 +69,10 @@ class FilesystemAttachmentStore(object):
         else:
             listFilDir = []
         return [OdkxLocalFile(**{'filename':f, 'md5hash': self.getMD5(id,f)}) for f in listFilDir if os.path.isfile(os.path.join(pathDir, f))]
+
+    def copyLocalFiles(self, oldStorePath):
+        print("copying files from:", oldStorePath, " to:", self.path)
+        copy_tree(oldStorePath, self.path)
 
 
 class OdkxLocalTable(object):
