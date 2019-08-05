@@ -50,11 +50,12 @@ class migrator(object):
 
     appRoot : path to the application root directory
     path : path to the definition.csv file or to an arbitrary file (relative to appRoot)
-    pathMapping : path to the mapping file (old : new) (relative to appRoot)
+    pathMapping : path to the mapping file (new : old) (relative to appRoot)
     """
 
-    def __init__(self, tableId, meta: OdkxServerMeta, local_storage: SqlLocalStorage, appRoot: str, path: str = None, pathMapping: str = None):
+    def __init__(self, tableId, newTableId, meta: OdkxServerMeta, local_storage: SqlLocalStorage, appRoot: str, path: str = None, pathMapping: str = None):
         self.tableId = tableId
+        self.newTableId = newTableId
         self.meta = meta
         self.table = self.meta.getTable(self.tableId)
         self.local_storage = local_storage
@@ -67,7 +68,7 @@ class migrator(object):
     def getNewTableDefinition(self) -> OdkxServerTableDefinition:
         with open(self.path, newline='') as csvfile:
             colList = list(csv.reader(csvfile))
-        return OdkxServerTableDefinition._from_DefFile(self.tableId, colList)
+        return OdkxServerTableDefinition._from_DefFile(self.newTableId, colList)
 
     def getColumnMapping(self) -> bidict:
         with open(self.pathMapping) as file:
@@ -229,6 +230,7 @@ class migrator(object):
         if deleteOldTable:
             self.table.deleteTable(True)
         else:
+            print(self.tableId, newTableDef.tableId)
             if self.tableId == newTableDef.tableId:
                 raise Exception("The namespace of the table defined in the new table definition is already used.\
                                 \nIf you want to continue, please use deleteOldTable=True")
