@@ -202,8 +202,7 @@ class migrator(object):
         oldTableDef = self.table.getTableDefinition()
         return self.compareTableDef(oldTableDef, newTableDef)
 
-    def createRemoteAndLocalTable(self, force=False):
-        newTableDef = self.getNewTableDefinition()
+    def createRemoteAndLocalTable(self, newTableDef, force=False):
         self.meta.createTable(newTableDef._asdict(True))
         # We update the info on the current loaded table in the migrator
         self.table = self.meta.getTable(newTableDef.tableId)
@@ -225,13 +224,15 @@ class migrator(object):
         with self.local_storage.engine.begin() as trans:
             self.local_table.toHistory(trans)
             self.local_table.updateLocalStatusDb(None, trans)
+
+        newTableDef = self.getNewTableDefinition()
         if deleteOldTable:
             self.table.deleteTable(True)
         else:
-            if self.tableId == self.table.tableId:
+            if self.tableId == newTableDef.tableId:
                 raise Exception("The namespace of the table defined in the new table definition is already used.\
                                 \nIf you want to continue, please use deleteOldTable=True")
-        self.createRemoteAndLocalTable(force)
+        self.createRemoteAndLocalTable(newTableDef, force)
         if self.tableId != self.table.tableId:
             self.local_table.attachments.copyLocalFiles(oldStorePath)
 
