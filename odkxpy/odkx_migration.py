@@ -42,11 +42,11 @@ class migrator(object):
     Process :
         - print compatibilities of the column between the 2 table definitions
         - sync the local table
-        - migrated the local table and all the linked tables to _legacy1_tableId...
+        - migrated the local table and all the linked tables to _history1_tableId...
         - delete the old table definition
         - upload the new table definition
         - initialize the table with the new table definition
-        - reupload the whole history for compatible columns if a legacy table exist
+        - reupload the whole history for compatible columns if a history table exist
 
     appRoot : path to the application root directory
     path : path to the definition.csv file or to an arbitrary file (relative to appRoot)
@@ -209,10 +209,9 @@ class migrator(object):
         self.table = self.meta.getTable(newTableDef.tableId)
         self.putFiles("table")
 
-    def uploadLegacyTable(self, table=None, res=None, force=False):
+    def uploadHistoryTable(self, table=None, res=None, force=False):
         self.local_table = self.local_storage.getLocalTable(self.table)
-        if self.local_table._checkIfLegacy():
-            self.local_table.uploadLegacy(self.table, specific_table=table, res=res, force_push=force)
+        self.local_table.uploadHistoryTable(self.table, localTable=table, res=res, force_push=force)
 
     def migrate(self, force=False):
         res = self.migrateReport()
@@ -222,9 +221,9 @@ class migrator(object):
         self.local_table = self.local_storage.getLocalTable(self.table)
         self.local_table.sync(self.table)
         with self.local_storage.engine.begin() as trans:
-            self.local_table.toLegacy(trans)
+            self.local_table.toHistory(trans)
             self.local_table.updateLocalStatusDb(None, trans)
         self.table.deleteTable(True)
         self.createRemoteAndLocalTable(force)
-        self.uploadLegacyTable(res=res, force=force)
+        self.uploadHistoryTable(res=res, force=force)
         self.local_table.sync(self.table)
