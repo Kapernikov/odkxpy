@@ -1,6 +1,7 @@
 import sqlalchemy
 from .odkx_server_table import OdkxServerTable, OdkxServerTableRow, OdkxServerTableColumn, OdkxServerColumnDefinition, OdkxServerTableDefinition
 from .odkx_local_file import OdkxLocalFile
+from .odkx_manifest_cache import OdkTableManifestCache
 from sqlalchemy import MetaData, text
 import os
 from typing import Optional, List
@@ -179,11 +180,11 @@ class OdkxLocalTable(object):
         """We don't check what is on the OdkxServer as the manifest should be empty in a legacy mode
         """
         got_files = []
-        remoteManifest = remoteTable.getAttachmentsManifest(rowId)
+        remoteTable.getAttachmentsManifest(rowId)
         for f in self.attachments.getManifest(rowId):
             got_files.append(f.filename)
-            #remoteFileProperties = next((x for x in remoteManifest if x.filename == f.filename), None)
-            #if remoteFileProperties:
+            # remoteFileProperties = next((x for x in remoteManifest if x.filename == f.filename), None)
+            # if remoteFileProperties:
             #    if remoteFileProperties.md5hash == f.md5hash:
             #        continue
             print(rowId, f.filename)
@@ -268,7 +269,6 @@ class OdkxLocalTable(object):
             ## we still need to check if we need to download attachments
             self._sync_attachments(remoteTable)
             return False
-        self._storage._cache_table_defintion(remoteTable.getTableDefinition())
         new_etag = self.stageAllDataChanges(remoteTable)
         st = self._getStagingTable()
         colnames = [x.name for x in st.columns]
@@ -425,6 +425,12 @@ class OdkxLocalTable(object):
                 result[k] = row[k]
         return result
 
+    def _cache_manifest(self, remoteTable: OdkxServerTable):
+        with self._storage.local_session_scope() as session:
+            OdkTableManifestCache(session, self._storage, remoteTable.connection).do_sync(
+                self.tableId, remoteTable.getFileManifest()
+            )
+
     def sync(self, remoteTable: OdkxServerTable, local_changes_prefix: Optional[str] = None, force_push: bool = False, no_attachments: bool = False):
         """
 
@@ -434,10 +440,12 @@ class OdkxLocalTable(object):
         :param no_attachments: ignore the attachments for now (the rows will remain in sync_attachments state, so they will be synced next time when you don't pass no_attachments)
         :return:
         """
+        self._cache_manifest(remoteTable)
+        self._storage._cache_table_defintion(remoteTable.getTableDefinition())
         self._sync_iter_pull(remoteTable)
         if local_changes_prefix is not None:
             self._sync_iter_push(remoteTable, local_changes_prefix, force_push=force_push, no_attachments=no_attachments)
-            self._sync_iter_pull(remoteTable, no_attachments=no_attachments)
+            rs = self._sync_iter_pull(remoteTable, no_attachments=no_attachments)
             return rs
 
     def _getTableMeta(self, tablename: str) -> sqlalchemy.Table:
@@ -645,59 +653,6 @@ class OdkxLocalTable(object):
             """.format(schema=self.schema, def_tn=def_tn, stagingtable=staging_tn, w=w))
         self._copyMissingData(staging_tn, def_tn)
 
-    def localSyncFromLegacyTable(self, table: str):
-        """
-        """
-
-        staging_tn = table + '_staging'
-        def_tn = table
-        self._copyMissingData(self.tableId, def_tn)
-        self.fillHashColumn(def_tn)
-
-        if (self.hasPendingLocalChanges(source_prefix)):
-            raise Exception("unsynced local changes still pending. sync first")
-
-
-        qry = """
-            UPDATE {schema}."{stagingtable}" set id = {schema}."{realtable}".id, state='modified', "rowETag" = {schema}."{realtable}"."rowETag"
-            FROM {schema}."{realtable}" WHERE {schema}."{stagingtable}"."{extid}" = {schema}."{realtable}"."{extid}"
-        """
-        with self.engine.begin() as c:
-            c.execute("update {schema}.{stagingtable} set state=null".format(schema=self.schema, stagingtable=staging_tn))
-            c.execute("update {schema}.{stagingtable} set deleted=False where deleted is null".format(schema=self.schema, stagingtable=staging_tn))
-            c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=def_tn, extid=external_id_column))
-            c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=self.tableId, extid=external_id_column))
-
-        self.fillHashColumn(staging_tn)
-        qry = """
-            UPDATE {schema}."{stagingtable}" set "rowETag" = {schema}."{realtable}"."rowETag", state='unchanged'
-            FROM {schema}."{realtable}" WHERE {schema}."{stagingtable}".id = {schema}."{realtable}".id AND 
-            {schema}."{stagingtable}".hash = {schema}."{realtable}".hash
-        """
-        with self.engine.begin() as c:
-            c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=def_tn))
-            c.execute("""update {schema}."{stagingtable}" set state='new', "createUser" = 'localSync'
-                        where state is null""".format(schema=self.schema, stagingtable=staging_tn))
-            c.execute("""update {schema}."{stagingtable}" set "savepointTimestamp"=now(), 
-                        "savepointCreator"='localSync', 
-                        "savepointType"='COMPLETE',
-                        "formId"='localSync',
-                        "lastUpdateUser"='localSync'
-                        where state in ('new', 'modified')""".format(schema=self.schema, stagingtable=staging_tn))
-            c.execute("""update {schema}."{stagingtable}" set "dataETagAtModification"='{etag}' where state in ('new', 'modified')""".format(schema=self.schema, stagingtable=staging_tn, etag=self.getLocalDataETag()))
-
-        self._fillUUIDs(staging_tn, 'id')
-        self._fillUUIDs(staging_tn, 'rowETag')
-
-        with self.engine.begin() as c:
-            w = ""
-            if localSyncMode == LocalSyncMode.ONLY_NEW_RECORDS:
-                w = " WHERE state in ('new') "
-            if localSyncMode == LocalSyncMode.ONLY_EXISTING_RECORDS:
-                w = " WHERE state in ('modified') "
-            c.execute("""delete from {schema}."{def_tn}" where {schema}."{def_tn}".id in (select {schema}."{stagingtable}".id from {schema}."{stagingtable}" {w}) 
-            """.format(schema=self.schema, def_tn=def_tn, stagingtable=staging_tn, w=w))
-        self._copyMissingData(staging_tn, def_tn)
 
     def _checkIfLegacy(self):
         """ check legacy tables exist
