@@ -13,6 +13,28 @@ ctypes_map = {
     '.html': 'text/html',
 }
 
+class bidict(dict):
+    """
+    https://stackoverflow.com/questions/3318625/how-to-implement-an-efficient-bidirectional-hash-table/3318808#3318808
+    """
+    def __init__(self, *args, **kwargs):
+        super(bidict, self).__init__(*args, **kwargs)
+        self.inverse = {}
+        for key, value in self.items():
+            self.inverse.setdefault(value,[]).append(key)
+
+    def __setitem__(self, key, value):
+        if key in self:
+            self.inverse[self[key]].remove(key)
+        super(bidict, self).__setitem__(key, value)
+        self.inverse.setdefault(value,[]).append(key)
+
+    def __delitem__(self, key):
+        self.inverse.setdefault(self[key],[]).remove(key)
+        if self[key] in self.inverse and not self.inverse[self[key]]:
+            del self.inverse[self[key]]
+        super(bidict, self).__delitem__(key)
+
 
 class migrator(object):
     """
@@ -47,17 +69,18 @@ class migrator(object):
             colList = list(csv.reader(csvfile))
         return OdkxServerTableDefinition._from_DefFile(self.tableId, colList)
 
-    def getColumnMapping(self):
+    def getColumnMapping(self) -> bidict:
         with open(self.pathMapping) as file:
-            mapping = json.load(file)
-        return mapping
+            mapping = json.load(file)["mapping"]
+            bdMapping = bidict(mapping)
+        return bdMapping
 
-    def getValidMapping(self, mapping, oldColumns, newColumns):
-        validMapping = {}
+    def getValidMapping(self, mapping, newColumns, oldColumns):
+        validMapping = bidict({})
         print("\nReport on the mapping: ")
         print("=========================")
         for k, v in mapping.items():
-            if k in oldColumns and v in newColumns:
+            if k in newColumns and v in oldColumns:
                 validMapping[k] = v
             else:
                 print(f"Unknown column:{k} or {v}")
@@ -66,12 +89,11 @@ class migrator(object):
         print(validMapping)
         return validMapping
 
-    def checkColumnsType(self, common, oldTableDef: OdkxServerTableDefinition, newTableDef: OdkxServerTableDefinition, validMapping):
-        # TODO : refactor
+    def checkColumnsType(self, common, oldTableDef: OdkxServerTableDefinition, newTableDef: OdkxServerTableDefinition, validMapping: bidict):
         incompat = []
         for item in common:
             if oldTableDef.getColDef(item) is None:
-                oldItem = list(validMapping.keys())[list(validMapping.values()).index(item)]
+                oldItem = validMapping[item]
                 oldColDef = oldTableDef.getColDef(oldItem)
             else:
                 oldColDef = oldTableDef.getColDef(item)
@@ -86,16 +108,21 @@ class migrator(object):
             mapping = self.getColumnMapping()
             validMapping = self.getValidMapping(mapping, oldTableDef.columnsKeyList, newTableDef.columnsKeyList)
             if validMapping:
-                oldMappedColumns = [validMapping[col] if col in validMapping.keys() else col for col in oldTableDef.columnsKeyList]
+                oldColumnsMapped = []
+                for col in oldTableDef.columnsKeyList:
+                    if col in set(validMapping.values()):
+                        oldColumnsMapped.extend(validMapping.inverse[col])
+                    else:
+                        oldColumnsMapped.append(col)
             else:
-                oldMappedColumns = oldTableDef.columnsKeyList
+                oldColumnsMapped = oldTableDef.columnsKeyList
         else:
             validMapping = False
-            oldMappedColumns = oldTableDef.columnsKeyList
+            oldColumnsMapped = oldTableDef.columnsKeyList
 
-        deleted = sorted(list(set(oldMappedColumns) - set(newTableDef.columnsKeyList)))
-        new = sorted(list(set(newTableDef.columnsKeyList) - set(oldMappedColumns)))
-        common = sorted(list(set(newTableDef.columnsKeyList) & set(oldMappedColumns)))
+        deleted = sorted(list(set(oldColumnsMapped) - set(newTableDef.columnsKeyList)))
+        new = sorted(list(set(newTableDef.columnsKeyList) - set(oldColumnsMapped)))
+        common = sorted(list(set(newTableDef.columnsKeyList) & set(oldColumnsMapped)))
         incompat = self.checkColumnsType(common, oldTableDef, newTableDef, validMapping)
 
 
