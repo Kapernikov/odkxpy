@@ -666,7 +666,7 @@ class OdkxLocalTable(object):
         """ check the number of the last existing history table
         """
         with self.engine.begin() as c:
-            res = c.execute("""select cast(split_part(substring("table_name",9), '_', 1) as int) as history_nb from information_schema.tables where "table_schema"='{schema}'
+            res = c.execute("""select cast(split_part(substring("table_name",10), '_', 1) as int) as history_nb from information_schema.tables where "table_schema"='{schema}'
                       and "table_name" like '\_history\_%%\_{tableId}\_log' order by history_nb desc limit 1
                       """.format(schema=self.schema, tableId=self.tableId))
             return res.scalar()
