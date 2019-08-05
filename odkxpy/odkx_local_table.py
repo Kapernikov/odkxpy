@@ -202,24 +202,20 @@ class OdkxLocalTable(object):
             c.execute(sqlalchemy.sql.text("update {schema}.{table} set state='synced' where id=:rowid".format(
                 schema=self.schema, table=table)), rowid=id)
 
-    def _sync_attachments(self, remoteTable: OdkxServerTable, local_changes_prefix: str = None):
+    def _sync_attachments(self, remoteTable: OdkxServerTable, localTable: str = None):
         """ Sync the attachments for the rowids in state "sync_attachments"
         """
         attach_cols = [x.elementKey for x in self.getTableDefinition().columns if x.elementType == 'rowpath']
 
-        if local_changes_prefix:
+        if localTable:
             mode = "pushing"
-            if not local_changes_prefix.startswith("_legacy_"):
-                table = self.tableId + "_" + local_changes_prefix
-            else:
-                table = local_changes_prefix + self.tableId + "_log"
-                with self.engine.begin() as c:
-                    res = c.execute("""SELECT column_name FROM information_schema.columns
-                                 WHERE table_schema = '{schema}' AND table_name = '{table}'
-                                 AND column_name LIKE '%%_uriFragment';
-                              """.format(schema=self.schema, table=table))
-                    resColumns = res.fetchall()
-                attach_cols = [col[0] for col in resColumns]
+            with self.engine.begin() as c:
+                res = c.execute("""SELECT column_name FROM information_schema.columns
+                             WHERE table_schema = '{schema}' AND table_name = '{table}'
+                             AND column_name LIKE '%%_uriFragment';
+                          """.format(schema=self.schema, table=localTable))
+                resColumns = res.fetchall()
+            attach_cols = [col[0] for col in resColumns]
         else:
             mode = "pulling"
             table = self.tableId
@@ -322,21 +318,17 @@ class OdkxLocalTable(object):
         )
         return qry
 
-    def _sync_iter_push(self, remoteTable: OdkxServerTable, local_changes_prefix: str, force_push: bool = False, no_attachments: bool = False):
+    def _sync_iter_push(self, remoteTable: OdkxServerTable, localTable: str, fullHistory: bool = False,
+                        force_push: bool = False, no_attachments: bool = False):
         definition = remoteTable.getTableDefinition().columns
         id_list_good = []
         id_list_conflict = []
-
-        if not local_changes_prefix.startswith("_legacy_"):
-            localTable = self.tableId + '_' + local_changes_prefix
-        else:
-            localTable = local_changes_prefix + self.tableId + "_log"
 
         if (self.hasUnresolvedConflicts(localTable)):
             raise Exception("unresolved conflicts, cannot push changes")
 
         records = []
-        if not local_changes_prefix.startswith("_legacy_"):
+        if not fullHistory:
             state_qry = self._qryState(localTable, tableDefinition=definition, state=['new', 'modified'], force_push=force_push)
             with self.engine.connect() as c:
                 for row in c.execute(state_qry):
@@ -382,7 +374,7 @@ class OdkxLocalTable(object):
                 print(qry)
                 c.execute(qry)
         if not no_attachments:
-            self._sync_attachments(remoteTable, local_changes_prefix)
+            self._sync_attachments(remoteTable, localTable)
 
     def row2rec(self,row: dict, definition: List[OdkxServerColumnDefinition], default_user: str, full: bool = True):
         datacols = [x.elementKey for x in definition if x.isMaterialized()]
@@ -444,7 +436,8 @@ class OdkxLocalTable(object):
         self._storage._cache_table_defintion(remoteTable.getTableDefinition())
         self._sync_iter_pull(remoteTable)
         if local_changes_prefix is not None:
-            self._sync_iter_push(remoteTable, local_changes_prefix, force_push=force_push, no_attachments=no_attachments)
+            localTable = self.tableId + '_' + local_changes_prefix
+            self._sync_iter_push(remoteTable, localTable, force_push=force_push, no_attachments=no_attachments)
             rs = self._sync_iter_pull(remoteTable, no_attachments=no_attachments)
             return rs
 
@@ -769,18 +762,15 @@ class OdkxLocalTable(object):
         self.res = res
         if specific_table is None:
             lastLegacyNb = self._checkLastLegacyNb()
-            legacy_prefix = "_legacy_" + str(lastLegacyNb) + "_"
-            table = legacy_prefix + self.tableId + "_log"
+            localTable = "_legacy_" + str(lastLegacyNb) + "_" + self.tableId + "_log"
         else:
-            legacy_prefix = specific_table.split(self.tableId)[0]
-            table = specific_table
-        print('--> Importing legacy table: ', table)
+            localTable = specific_table
+        print('--> Importing legacy table: ', localTable)
         # sequence = remoteTable.getChangeSets(dataETag=self.getInitialDataETag)  
         # TODO: enable this when fixed in the sync endpoint https://forum.opendatakit.org/t/get-changesets-api-from-the-odk-x-sync-protocol/21084/2
-        sequence = self._constructSequence(table)
+        sequence = self._constructSequence(localTable)
         for dataETag in sequence:
             print('--> Pushing changes with dataETag: ', dataETag)
-            if not self._checkIfPreparedUpload(table):
-                self._prepareUpload(dataETag, table)
-            self._sync_iter_push(remoteTable, legacy_prefix, force_push=force_push)
-            self._sync_attachments(remoteTable, legacy_prefix)
+            if not self._checkIfPreparedUpload(localTable):
+                self._prepareUpload(dataETag, localTable)
+            self._sync_iter_push(remoteTable, localTable, fullHistory=True, force_push=force_push)
