@@ -61,7 +61,7 @@ class migrator(object):
         self.local_storage = local_storage
         self.appRoot = appRoot
         self.pathAppFiles = self.appRoot + "/app/config/assets/"
-        self.pathTableFiles = self.appRoot + "/app/config/tables/" + self.tableId
+        self.pathTableFiles = self.appRoot + "/app/config/tables/" + self.newTableId
         self.path = self.appRoot + "/" + path if path is not None else self.pathTableFiles + "/definition.csv"
         self.pathMapping = self.appRoot + "/" + pathMapping
 
@@ -177,7 +177,7 @@ class migrator(object):
             print("Putting one file : {path}".format(path=self.path))
             localFiles = [self.path]
         elif (mode == "table") or (mode == "table_html_js"):
-            print("Putting table files : {tableId}".format(tableId=self.tableId))
+            print("Putting table files : {tableId}".format(tableId=self.newTableId))
             localFiles = self.getListOfFiles(self.pathTableFiles)
         else:
             raise Exception("Unrecognized mode")
@@ -209,9 +209,9 @@ class migrator(object):
         self.table = self.meta.getTable(newTableDef.tableId)
         self.putFiles("table")
 
-    def uploadHistoryTable(self, table=None, res=None, force=False):
+    def uploadHistoryTable(self, oldTableId, table=None, res=None, force=False):
         self.local_table = self.local_storage.getLocalTable(self.table)
-        self.local_table.uploadHistoryTable(self.table, localTable=table, res=res, force_push=force)
+        self.local_table.uploadHistoryTable(oldTableId, self.table, localTable=table, res=res, force_push=force)
 
     def migrate(self, force=False, deleteOldTable=False):
         res = self.migrateReport()
@@ -221,6 +221,7 @@ class migrator(object):
         self.local_table = self.local_storage.getLocalTable(self.table)
         self.local_table.sync(self.table)
         oldStorePath = self.local_table.attachments.path
+        oldTableId = self.local_table.tableId
 
         with self.local_storage.engine.begin() as trans:
             self.local_table.toHistory(trans)
@@ -230,13 +231,13 @@ class migrator(object):
         if deleteOldTable:
             self.table.deleteTable(True)
         else:
-            print(self.tableId, newTableDef.tableId)
             if self.tableId == newTableDef.tableId:
                 raise Exception("The namespace of the table defined in the new table definition is already used.\
                                 \nIf you want to continue, please use deleteOldTable=True")
         self.createRemoteAndLocalTable(newTableDef, force)
         if self.tableId != self.table.tableId:
+            self.local_table = self.local_storage.getLocalTable(self.table)
             self.local_table.attachments.copyLocalFiles(oldStorePath)
 
-        self.uploadHistoryTable(res=res, force=force)
+        self.uploadHistoryTable(oldTableId, res=res, force=force)
         self.local_table.sync(self.table)

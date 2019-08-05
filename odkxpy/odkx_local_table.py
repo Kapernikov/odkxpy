@@ -220,6 +220,7 @@ class OdkxLocalTable(object):
                           """.format(schema=self.schema, table=localTable))
                 resColumns = res.fetchall()
             attach_cols = [col[0] for col in resColumns]
+            table = localTable
         else:
             mode = "pulling"
             table = self.tableId
@@ -651,24 +652,32 @@ class OdkxLocalTable(object):
         self._copyMissingData(staging_tn, def_tn)
 
 
-    def _checkIfHistory(self):
+    def _checkIfHistory(self, oldTableId=None):
         """ check history tables exist
         """
+        if oldTableId:
+            tableId = oldTableId
+        else:
+            tableId= self.tableId
         with self.engine.begin() as c:
             res = c.execute("""select * from information_schema.tables where "table_schema"='{schema}'
-                      and "table_name" like '\_history\_%%\_{tableId}\_log' limit 1""".format(schema=self.schema, tableId=self.tableId))
-            if res.first() is None:
-                return False
-            else:
+                      and "table_name" like '\_history\_%%\_{tableId}\_log' limit 1""".format(schema=self.schema, tableId=tableId))
+            if res.first():
                 return True
+            else:
+                return False
 
-    def _checkLastHistoryNb(self):
+    def _checkLastHistoryNb(self, oldTableId=None):
         """ check the number of the last existing history table
         """
+        if oldTableId:
+            tableId = oldTableId
+        else:
+            tableId= self.tableId
         with self.engine.begin() as c:
             res = c.execute("""select cast(split_part(substring("table_name",10), '_', 1) as int) as history_nb from information_schema.tables where "table_schema"='{schema}'
                       and "table_name" like '\_history\_%%\_{tableId}\_log' order by history_nb desc limit 1
-                      """.format(schema=self.schema, tableId=self.tableId))
+                      """.format(schema=self.schema, tableId=tableId))
             return res.scalar()
 
     def _addStateColumn(self, table, transaction: sqlalchemy.engine.Connection=None):
@@ -737,6 +746,7 @@ class OdkxLocalTable(object):
 
 
     def toHistory(self, transaction: sqlalchemy.engine.Connection=None):
+        print(self.tableId)
         if self._checkIfHistory():
             lastHistoryNb = self._checkLastHistoryNb()
             newHistoryNb = int(lastHistoryNb) + 1
@@ -759,15 +769,15 @@ class OdkxLocalTable(object):
         self._safeSql(sql, transaction)
         self._addStateColumn("_history_" + str(newHistoryNb) + "_" + self.tableId + "_log", transaction)
 
-    def uploadHistoryTable(self, remoteTable: OdkxServerTable, localTable: str = None, res: dict = None, force_push: bool = False):
+    def uploadHistoryTable(self, oldTableId: str, remoteTable: OdkxServerTable, localTable: str = None, res: dict = None, force_push: bool = False):
         #  Calculate the order of history via the timestamp (we don't have historization with the ETag, only on the server)
         """ Sync by batch using the history with only unique occurence of row id's
         """
         self.res = res
         if localTable is None:
-            if self._checkIfHistory():
-                lastHistoryNb = self._checkLastHistoryNb()
-                localTable = "_history_" + str(lastHistoryNb) + "_" + self.tableId + "_log"
+            if self._checkIfHistory(oldTableId):
+                lastHistoryNb = self._checkLastHistoryNb(oldTableId)
+                localTable = "_history_" + str(lastHistoryNb) + "_" + oldTableId + "_log"
         print('--> Importing history table: ', localTable)
         # sequence = remoteTable.getChangeSets(dataETag=self.getInitialDataETag)  
         # TODO: enable this when fixed in the sync endpoint https://forum.opendatakit.org/t/get-changesets-api-from-the-odk-x-sync-protocol/21084/2
