@@ -49,31 +49,19 @@ class SqlLocalStorage(object):
 
     def _create_cache(self, create=True):
 
-        table_name = self.chache_table_name
+        def def_class(base):
+            class Def(base):
+                __tablename__ = self.chache_table_name
+                __table_args__ = (sqlalchemy.UniqueConstraint('tableId', 'schemaETag', name='uix_1'),)
 
-        meta = sqlalchemy.MetaData()
-        meta.bind = self.engine
+                tableId = sqlalchemy.Column(sqlalchemy.Text, index=True, primary_key=True)
+                schemaETag = sqlalchemy.Column(sqlalchemy.Text)
+                odkxpydef = sqlalchemy.Column(sqlalchemy.dialects.postgresql.JSONB(none_as_null=False))
+            return Def
 
-        # try:
-
-        #     tabledef = sqlalchemy.Table(
-        #         table_name, meta, schema=self.schema, autoload=True, autoload_with=self.engine)
-
-        # except sqlalchemy.exc.NoSuchTableError:
-
-        tabledef = sqlalchemy.Table(table_name, meta,
-                                    sqlalchemy.Column(
-                                        "tableId", sqlalchemy.types.Text(), index=True),
-                                    sqlalchemy.Column(
-                                        "schemaETag", sqlalchemy.types.Text),
-                                    sqlalchemy.Column(
-                                        "odkxpydef", sqlalchemy.types.JSON(none_as_null=False)),
-                                    sqlalchemy.UniqueConstraint(
-                                        'tableId', 'schemaETag', name='uix_1'),
-                                    schema=self.schema
-                                    )
+        tabledef = def_class(self.declarative_base())
         if create:
-            meta.create_all()
+            tabledef.__table__.create(bind=self.engine, checkfirst=True)
         return tabledef
 
     def _cache_table_defintion(self, table_defintion: OdkxServerTableDefinition):
@@ -82,48 +70,23 @@ class SqlLocalStorage(object):
         """
         table = self._create_cache(False)
 
-        # sql = f"""INSERT INTO {self.schema}.{self.chache_table_name} ("tableId", "schemaETag", "odkxpydef")
-        #          VALUES ('{table_defintion.tableId}', '{table_defintion.schemaETag}', '{str(datetime.datetime.now())}')"""
-
         # store defintion
+        with self.local_session_scope() as session:
+            previous = session.query(table).filter_by(tableId = table_defintion.tableId).first()
 
-        with self.engine.connect() as c:
-            result = c.execute(
-                table.select(),
-                tableId=table_defintion.tableId
-            )
-            previous = result.fetchone()
-
-            if not previous:
-                c.execute(
-                    table.insert(),
+            if not previous or previous.schemaETag != table_defintion.schemaETag:
+                session.merge(table(
                     tableId=table_defintion.tableId,
                     schemaETag=table_defintion.schemaETag,
                     odkxpydef=table_defintion._asdict()
-                )
-            else:
-                if previous["schemaETag"] != table_defintion.schemaETag:
-                    c.execute(
-                        table.delete(),
-                        tableId=previous["tableId"],
-                        schemaETag=previous["schemaETag"]
-
-                    )
-                    c.execute(
-                        table.insert(),
-                        tableId=table_defintion.tableId,
-                        schemaETag=table_defintion.schemaETag,
-                        odkxpydef=table_defintion._asdict()
-                    )
+                ))
 
     def getCachedTableDefinition(self, tableId: str) -> OdkxServerTableDefinition:
-        with self.engine.connect() as c:
-            qry = f"""select "odkxpydef" from {self.schema}.{self.chache_table_name} where "tableId" = '{tableId}'"""
-            result = c.execute(qry).fetchone()
+        with self.local_session_scope() as session:
+            result = session.query(self._create_cache(False)).filter_by(tableId=tableId).first()
             if not result:
                 raise CacheNotFoundError()
-
-        return OdkxServerTableDefinition.tableDefinitionOf(dict(result)["odkxpydef"])
+            return OdkxServerTableDefinition.tableDefinitionOf(result.odkxpydef)
 
     def getCachedLocalTable(self, tableId: str) -> OdkxLocalTable:
         # cache check
