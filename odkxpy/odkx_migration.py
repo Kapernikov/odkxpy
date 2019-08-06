@@ -107,7 +107,7 @@ class migrator(object):
     def compareTableDef(self, oldTableDef: OdkxServerTableDefinition, newTableDef: OdkxServerTableDefinition):
         if self.pathMapping is not None:
             mapping = self.getColumnMapping()
-            validMapping = self.getValidMapping(mapping, oldTableDef.columnsKeyList, newTableDef.columnsKeyList)
+            validMapping = self.getValidMapping(mapping, newTableDef.columnsKeyList, oldTableDef.columnsKeyList)
             if validMapping:
                 oldColumnsMapped = []
                 for col in oldTableDef.columnsKeyList:
@@ -123,7 +123,7 @@ class migrator(object):
 
         deleted = sorted(list(set(oldColumnsMapped) - set(newTableDef.columnsKeyList)))
         new = sorted(list(set(newTableDef.columnsKeyList) - set(oldColumnsMapped)))
-        common = sorted(list(set(newTableDef.columnsKeyList) & set(oldColumnsMapped)))
+        common = sorted(list(set(newTableDef.columnsKeyList) & set(oldTableDef.columnsKeyList)))
         incompat = self.checkColumnsType(common, oldTableDef, newTableDef, validMapping)
 
 

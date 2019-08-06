@@ -690,7 +690,7 @@ class OdkxLocalTable(object):
         colAccess = ['defaultAccess',  'groupModify', 'groupPrivileged', 'groupReadOnly', 'rowOwner']
 
         if self.res is not None:
-            mappedCols = [v + ' as ' + k for k,v in self.res['mapping'].items()]
+            mappedCols = [v + '\" as \"' + k for k,v in self.res['mapping'].items()]
             unchangedCols = self.res['common']
             colsToTake = genericCols + mappedCols + unchangedCols + colAccess
         else:
