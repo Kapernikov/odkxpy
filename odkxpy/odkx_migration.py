@@ -203,7 +203,9 @@ class migrator(object):
         oldTableDef = self.table.getTableDefinition()
         return self.compareTableDef(oldTableDef, newTableDef)
 
-    def createRemoteAndLocalTable(self, newTableDef, force=False):
+    def createRemoteTable(self, newTableDef, force=False):
+        if newTableDef.tableId in [x.tableId for x in self.meta.getTables()]:
+            raise Exception("The tableId of the table defined in the new table definition is already used on the server.")
         self.meta.createTable(newTableDef._asdict(True))
         # We update the info on the current loaded table in the migrator
         self.table = self.meta.getTable(newTableDef.tableId)
@@ -235,9 +237,9 @@ class migrator(object):
             if self.tableId == newTableDef.tableId:
                 raise Exception("The namespace of the table defined in the new table definition is already used.\
                                 \nIf you want to continue, please use deleteOldTable=True")
-        self.createRemoteAndLocalTable(newTableDef, force)
+        self.createRemoteTable(newTableDef, force)
+        self.local_table = self.local_storage.getLocalTable(self.table)
         if self.tableId != self.table.tableId:
-            self.local_table = self.local_storage.getLocalTable(self.table)
             self.local_table.attachments.copyLocalFiles(oldStorePath)
 
         self.uploadHistoryTable(oldTableId, res=res, force=force)
