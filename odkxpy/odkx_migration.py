@@ -213,7 +213,7 @@ class migrator(object):
         self.local_table = self.local_storage.getLocalTable(self.table)
         self.local_table.uploadHistoryTable(oldTableId, self.table, localTable=table, res=res, force_push=force)
 
-    def migrate(self, force=False, deleteOldTable=False):
+    def migrate(self, force=False, deleteOldTables=False):
         res = self.migrateReport()
         if res['incompat'] and not force:
             print("The migration was aborted")
@@ -224,11 +224,12 @@ class migrator(object):
         oldTableId = self.local_table.tableId
 
         with self.local_storage.engine.begin() as trans:
-            self.local_table.toHistory(trans)
-            self.local_table.updateLocalStatusDb(None, trans)
+            self.local_table.toHistory(trans, deleteOldTables)
+            if deleteOldTables:
+                self.local_table.updateLocalStatusDb(None, trans)
 
         newTableDef = self.getNewTableDefinition()
-        if deleteOldTable:
+        if deleteOldTables:
             self.table.deleteTable(True)
         else:
             if self.tableId == newTableDef.tableId:
@@ -241,3 +242,4 @@ class migrator(object):
 
         self.uploadHistoryTable(oldTableId, res=res, force=force)
         self.local_table.sync(self.table)
+        self.putFiles("app")

@@ -745,26 +745,44 @@ class OdkxLocalTable(object):
         return seq
 
 
-    def toHistory(self, transaction: sqlalchemy.engine.Connection=None):
+    def toHistory(self, transaction: sqlalchemy.engine.Connection = None, deleteOldTables: bool = False):
         print(self.tableId)
         if self._checkIfHistory():
             lastHistoryNb = self._checkLastHistoryNb()
             newHistoryNb = int(lastHistoryNb) + 1
         else:
             newHistoryNb = 1
-        sql="""  DO
-                 $$
-                 DECLARE
-                     row record;
-                 BEGIN
-                     FOR row IN SELECT "table_name" FROM information_schema.tables WHERE "table_schema"='{schema}'
-                         and ("table_name" like '{tableId}\_%%' or "table_name" = '{tableId}')
-                     LOOP
-                         EXECUTE 'ALTER TABLE {schema}.' || row."table_name" || ' RENAME TO _history_{history_nb}_' || row."table_name";
-                     END LOOP;
-                 END;
-                 $$;
-                 """.format(schema=self.schema, tableId=self.tableId, history_nb=newHistoryNb)
+
+        if deleteOldTables:
+            sql = """  DO
+                     $$
+                     DECLARE
+                         row record;
+                     BEGIN
+                         FOR row IN SELECT "table_name" FROM information_schema.tables WHERE "table_schema"='{schema}'
+                             and ("table_name" like '{tableId}\_%%' or "table_name" = '{tableId}')
+                         LOOP
+                             EXECUTE 'ALTER TABLE {schema}.' || row."table_name" || ' RENAME TO _history_{history_nb}_' || row."table_name";
+                         END LOOP;
+                     END;
+                     $$;
+                     """.format(schema=self.schema, tableId=self.tableId, history_nb=newHistoryNb)
+        else:
+
+            sql = """  DO
+                     $$
+                     DECLARE
+                         row record;
+                     BEGIN
+                         FOR row IN SELECT "table_name" FROM information_schema.tables WHERE "table_schema"='{schema}'
+                             and ("table_name" like '{tableId}\_%%' or "table_name" = '{tableId}')
+                         LOOP
+                             EXECUTE 'CREATE TABLE history_{history_nb}_' || row."table_name" ||
+                             'as SELECT * FROM {schema}.' || row."table_name";
+                         END LOOP;
+                     END;
+                     $$;
+                     """.format(schema=self.schema, tableId=self.tableId, history_nb=newHistoryNb)
 
         self._safeSql(sql, transaction)
         self._addStateColumn("_history_" + str(newHistoryNb) + "_" + self.tableId + "_log", transaction)
