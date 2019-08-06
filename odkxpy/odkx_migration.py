@@ -50,24 +50,25 @@ class migrator(object):
 
     appRoot : path to the application root directory
     path : path to the definition.csv file or to an arbitrary file (relative to appRoot)
-    pathMapping : path to the mapping file (old : new) (relative to appRoot)
+    pathMapping : path to the mapping file (new : old) (relative to appRoot)
     """
 
-    def __init__(self, tableId, meta: OdkxServerMeta, local_storage: SqlLocalStorage, appRoot: str, path: str = None, pathMapping: str = None):
+    def __init__(self, tableId, newTableId, meta: OdkxServerMeta, local_storage: SqlLocalStorage, appRoot: str, path: str = None, pathMapping: str = None):
         self.tableId = tableId
+        self.newTableId = newTableId
         self.meta = meta
         self.table = self.meta.getTable(self.tableId)
         self.local_storage = local_storage
         self.appRoot = appRoot
         self.pathAppFiles = self.appRoot + "/app/config/assets/"
-        self.pathTableFiles = self.appRoot + "/app/config/tables/" + self.tableId
+        self.pathTableFiles = self.appRoot + "/app/config/tables/" + self.newTableId
         self.path = self.appRoot + "/" + path if path is not None else self.pathTableFiles + "/definition.csv"
         self.pathMapping = self.appRoot + "/" + pathMapping
 
     def getNewTableDefinition(self) -> OdkxServerTableDefinition:
         with open(self.path, newline='') as csvfile:
             colList = list(csv.reader(csvfile))
-        return OdkxServerTableDefinition._from_DefFile(self.tableId, colList)
+        return OdkxServerTableDefinition._from_DefFile(self.newTableId, colList)
 
     def getColumnMapping(self) -> bidict:
         with open(self.pathMapping) as file:
@@ -106,7 +107,7 @@ class migrator(object):
     def compareTableDef(self, oldTableDef: OdkxServerTableDefinition, newTableDef: OdkxServerTableDefinition):
         if self.pathMapping is not None:
             mapping = self.getColumnMapping()
-            validMapping = self.getValidMapping(mapping, oldTableDef.columnsKeyList, newTableDef.columnsKeyList)
+            validMapping = self.getValidMapping(mapping, newTableDef.columnsKeyList, oldTableDef.columnsKeyList)
             if validMapping:
                 oldColumnsMapped = []
                 for col in oldTableDef.columnsKeyList:
@@ -122,7 +123,7 @@ class migrator(object):
 
         deleted = sorted(list(set(oldColumnsMapped) - set(newTableDef.columnsKeyList)))
         new = sorted(list(set(newTableDef.columnsKeyList) - set(oldColumnsMapped)))
-        common = sorted(list(set(newTableDef.columnsKeyList) & set(oldColumnsMapped)))
+        common = sorted(list(set(newTableDef.columnsKeyList) & set(oldTableDef.columnsKeyList)))
         incompat = self.checkColumnsType(common, oldTableDef, newTableDef, validMapping)
 
 
@@ -176,7 +177,7 @@ class migrator(object):
             print("Putting one file : {path}".format(path=self.path))
             localFiles = [self.path]
         elif (mode == "table") or (mode == "table_html_js"):
-            print("Putting table files : {tableId}".format(tableId=self.tableId))
+            print("Putting table files : {tableId}".format(tableId=self.newTableId))
             localFiles = self.getListOfFiles(self.pathTableFiles)
         else:
             raise Exception("Unrecognized mode")
@@ -208,9 +209,9 @@ class migrator(object):
         self.table = self.meta.getTable(newTableDef.tableId)
         self.putFiles("table")
 
-    def uploadHistoryTable(self, table=None, res=None, force=False):
+    def uploadHistoryTable(self, oldTableId, table=None, res=None, force=False):
         self.local_table = self.local_storage.getLocalTable(self.table)
-        self.local_table.uploadHistoryTable(self.table, localTable=table, res=res, force_push=force)
+        self.local_table.uploadHistoryTable(oldTableId, self.table, localTable=table, res=res, force_push=force)
 
     def migrate(self, force=False, deleteOldTable=False):
         res = self.migrateReport()
@@ -220,6 +221,7 @@ class migrator(object):
         self.local_table = self.local_storage.getLocalTable(self.table)
         self.local_table.sync(self.table)
         oldStorePath = self.local_table.attachments.path
+        oldTableId = self.local_table.tableId
 
         with self.local_storage.engine.begin() as trans:
             self.local_table.toHistory(trans)
@@ -234,7 +236,8 @@ class migrator(object):
                                 \nIf you want to continue, please use deleteOldTable=True")
         self.createRemoteAndLocalTable(newTableDef, force)
         if self.tableId != self.table.tableId:
+            self.local_table = self.local_storage.getLocalTable(self.table)
             self.local_table.attachments.copyLocalFiles(oldStorePath)
 
-        self.uploadHistoryTable(res=res, force=force)
+        self.uploadHistoryTable(oldTableId, res=res, force=force)
         self.local_table.sync(self.table)
