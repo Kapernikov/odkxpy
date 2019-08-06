@@ -81,7 +81,7 @@ class migrator(object):
         print("\nReport on the mapping: ")
         print("=========================")
         for k, v in mapping.items():
-            if k in newColumns and v in oldColumns:
+            if k in newColumns and v in oldColumns and k != v:
                 validMapping[k] = v
             else:
                 print(f"Unknown column:{k} or {v}")
@@ -122,7 +122,7 @@ class migrator(object):
             oldColumnsMapped = oldTableDef.columnsKeyList
 
         deleted = sorted(list(set(oldColumnsMapped) - set(newTableDef.columnsKeyList)))
-        new = sorted(list(set(newTableDef.columnsKeyList) - set(oldColumnsMapped)))
+        new = sorted(list(set(newTableDef.columnsKeyList) - set(oldTableDef.columnsKeyList) - set(oldColumnsMapped)))
         common = sorted(list(set(newTableDef.columnsKeyList) & set(oldTableDef.columnsKeyList)))
         incompat = self.checkColumnsType(common, oldTableDef, newTableDef, validMapping)
 
