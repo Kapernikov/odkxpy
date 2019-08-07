@@ -154,10 +154,11 @@ class OdkxLocalTable(object):
         last_rs = None
         with self.engine.begin() as transaction:
             transaction.execute(st.delete())
-            for rowset in remoteTable.getDiffGenerator(dataETag=self.getLocalDataETag()):
+            for rowset in remoteTable.getDiffGenerator(dataETag=self.getLocalDataETag(), getFullLog=True):
                 last_rs = rowset
                 if (len(rowset.rows) > 0):
-                    transaction.execute(st.insert(), [self.row_asdict(x) for x in rowset.rows])
+                    #transaction.execute(st.insert(), [self.row_asdict(x) for x in rowset.rows])
+                    transaction.execute(st.insert().values([self.row_asdict(x) for x in rowset.rows]))
         if not last_rs is None:
             return last_rs.dataETag
 

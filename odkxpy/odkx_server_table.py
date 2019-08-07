@@ -304,13 +304,13 @@ class OdkxServerTable(object):
             cursor = rs.webSafeResumeCursor
             yield rs
 
-    def getDiffGenerator(self, dataETag=None, fetchLimit=None) -> Generator[OdkxServerTableRowset, None, None]:
+    def getDiffGenerator(self, dataETag=None, fetchLimit=None, getFullLog=False) -> Generator[OdkxServerTableRowset, None, None]:
         return self._generator_rowset(
-            lambda z_cursor: self.getDiff(dataETag=dataETag, cursor=z_cursor, fetchLimit=fetchLimit))
+            lambda z_cursor: self.getDiff(dataETag=dataETag, cursor=z_cursor, fetchLimit=fetchLimit, getFullLog=getFullLog))
 
-    def getDiff(self, dataETag=None, cursor=None, fetchLimit=None) -> OdkxServerTableRowset:
+    def getDiff(self, dataETag=None, cursor=None, fetchLimit=None, getFullLog=False) -> OdkxServerTableRowset:
         params = {'data_etag': dataETag,
-                  'cursor': cursor, 'fetchLimit': fetchLimit}
+                  'cursor': cursor, 'fetchLimit': fetchLimit, 'getFullLog': getFullLog}
         r = self.connection.GET(self.getTableDefinitionRoot() + "/diff", params)
         return self._parse_rowset(r)
 
