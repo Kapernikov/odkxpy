@@ -182,16 +182,14 @@ class OdkxLocalTable(object):
         return True
 
     def uploadAttachments(self, remoteTable: OdkxServerTable, rowId: str, target_file_list: List[str]):
-        """We don't check what is on the OdkxServer as the manifest should be empty in a history mode
-        """
         got_files = []
-        remoteTable.getAttachmentsManifest(rowId)
+        remoteManifest = remoteTable.getAttachmentsManifest(rowId)
         for f in self.attachments.getManifest(rowId):
             got_files.append(f.filename)
-            # remoteFileProperties = next((x for x in remoteManifest if x.filename == f.filename), None)
-            # if remoteFileProperties:
-            #    if remoteFileProperties.md5hash == f.md5hash:
-            #        continue
+            remoteFileProperties = next((x for x in remoteManifest if x.filename == f.filename), None)
+            if remoteFileProperties:
+                if remoteFileProperties.md5hash == f.md5hash:
+                    continue
             print(rowId, f.filename)
             res = remoteTable.putAttachment(rowId, f.filename, self.attachments.openLocalFile(rowId, f.filename))
             print(res)
