@@ -272,15 +272,16 @@ class OdkxLocalTable(object):
         new_etag = self.stageAllDataChanges(remoteTable)
         st = self._getStagingTable()
         colnames = [x.name for x in st.columns]
-
+        connection = self.engine.connect()
+        trans = connection.begin()
         # sync up data
-        with self.engine.begin() as trans:
-            trans.execute("delete from {schema}.{table} where id in (select id from {schema}.{stagingtable})".format(
+        try:
+            connection.execute("delete from {schema}.{table} where id in (select id from {schema}.{stagingtable})".format(
                 schema=self.schema, table=self.tableId, stagingtable=self.tableId + '_staging'
             ))
             fields = ','.join(['"{colname}"'.format(colname=colname) for colname in colnames])
             fields_v = ','.join(['st."{colname}"'.format(colname=colname) for colname in colnames])
-            trans.execute("""insert into {schema}.{table} ({fields},state) select {fields_v}, 'sync_attachments' as state from {schema}.{stagingtable} st
+            connection.execute("""insert into {schema}.{table} ({fields},state) select {fields_v}, 'sync_attachments' as state from {schema}.{stagingtable} st
             inner join 
             ( 
             select l.id, max(l."rowETag") as "rowETag" from {schema}.{stagingtable} l inner join
@@ -292,8 +293,35 @@ class OdkxLocalTable(object):
             """.format(
                 schema=self.schema, table=self.tableId, stagingtable=self.tableId+'_staging', fields=fields, fields_v=fields_v
             ))
-            self._staging_to_log(trans)
-            self.updateLocalStatusDb(new_etag, trans)
+            trans.commit()
+        except:
+            trans.rollback()
+            raise
+        trans2 = connection.begin()
+        try:
+            self._staging_to_log(connection)
+            trans2.commit()
+        except:
+            trans2.rollback()
+            connection.execute(
+                "delete from {schema}.{table} where id in (select id from {schema}.{stagingtable})".format(
+                    schema=self.schema, table=self.tableId, stagingtable=self.tableId + '_staging'
+                ))
+            raise
+        trans3 = connection.begin()
+        try:
+            self.updateLocalStatusDb(new_etag, connection)
+        except:
+            trans3.rollback()
+            connection.execute(
+                "delete from {schema}.{table} where id in (select id from {schema}.{stagingtable})".format(
+                    schema=self.schema, table=self.tableId, stagingtable=self.tableId + '_staging'
+                ))
+            connection.execute(
+                "delete from {schema}.{table} where id in (select id from {schema}.{stagingtable})".format(
+                    schema=self.schema, table=self.tableId+ "_log", stagingtable=self.tableId + '_staging'
+                ))
+            raise
         if not no_attachments:
             self._sync_attachments(remoteTable)
         return True
