@@ -124,11 +124,19 @@ class OdkxLocalTable(object):
             with self.engine.begin() as con:
                 con.execute(sql)
 
-    def updateLocalStatusDb(self, dataETag, transaction: sqlalchemy.engine.Connection=None):
-        print(f"status will be {dataETag}")
+    def updateLocalStatusDb(self, dataETag, connection: sqlalchemy.engine.Connection=None):
+        if connection is None:
+            connection = self.engine.connect()
+        trans = connection.begin()
         sql = f"""INSERT INTO {self.schema}.status_table ("table_name", "dataETag", "sync_date")
                  VALUES ('{self.tableId}', '{dataETag}', '{str(datetime.datetime.now())}')"""
-        self._safeSql(sql, transaction)
+        try:
+            connection.execute(sql)
+            trans.commit()
+        except:
+            trans.rollback()
+            print("failed update local status")
+
 
     def row_asdict(self, r: OdkxServerTableRow):
         dct = {}
@@ -246,8 +254,13 @@ class OdkxLocalTable(object):
                 if self.downloadAttachments(remoteTable, id, files_by_id[id]):
                     self._writeSuccess(table, id)
 
-    def _staging_to_log(self, transaction: sqlalchemy.engine.Connection = None):
-        st = self._getStagingTable()
+    def _staging_to_log(self, connection: sqlalchemy.engine.Connection = None, stagingtable = None):
+        if stagingtable is not None:
+            st = stagingtable
+        else:
+            st = self._getStagingTable()
+        if connection is None:
+            connection = self.engine.connect()
         colnames = [x.name for x in st.columns]
         fields = ','.join(['"{colname}"'.format(colname=colname) for colname in colnames])
         sql="insert into {schema}.{logtable} ({fields}) select {fields} from {schema}.{stagingtable}".format(
@@ -256,7 +269,13 @@ class OdkxLocalTable(object):
                 fields=fields,
                 stagingtable=self.tableId+'_staging'
             )
-        self._safeSql(sql, transaction)
+        trans = connection.begin()
+        try:
+            connection.execute(sql)
+            trans.commit()
+        except:
+            trans.rollback()
+            print(f"failed staging to log")
 
     def hasIncomingChanges(self, remoteTable: OdkxServerTable) -> bool:
         """
@@ -295,45 +314,15 @@ class OdkxLocalTable(object):
             """.format(
                 schema=self.schema, table=self.tableId, stagingtable=self.tableId+'_staging', fields=fields, fields_v=fields_v
             ))
-            trans.commit()
-        except:
-            trans.rollback()
-            raise
-        print("filled deftable")
-        trans = connection.begin()
-        try:
-            self._staging_to_log(connection)
-            trans.commit()
-        except:
-            trans.rollback()
-            connection.execute(
-                "delete from {schema}.{table} where id in (select id from {schema}.{stagingtable})".format(
-                    schema=self.schema, table=self.tableId, stagingtable=self.tableId + '_staging'
-                ))
-            raise
-        print("filled logtable")
-        trans = connection.begin()
-        try:
+            print("filled deftable")
+            self._staging_to_log(connection, stagingtable=st)
+            print("filled logtable")
+            self.updateLocalStatusDb(new_etag, connection)
             print(f"status will be {new_etag}")
-            sql = f"""INSERT INTO {self.schema}.status_table ("table_name", "dataETag", "sync_date")
-                             VALUES ('{self.tableId}', '{new_etag}', '{str(datetime.datetime.now())}')"""
-            print(sql)
-            res = connection.execute(sql)
             trans.commit()
-            print(res)
         except:
-            print("rollback")
             trans.rollback()
-            connection.execute(
-                "delete from {schema}.{table} where id in (select id from {schema}.{stagingtable})".format(
-                    schema=self.schema, table=self.tableId, stagingtable=self.tableId + '_staging'
-                ))
-            connection.execute(
-                "delete from {schema}.{table} where id in (select id from {schema}.{stagingtable})".format(
-                    schema=self.schema, table=self.tableId+ "_log", stagingtable=self.tableId + '_staging'
-                ))
             raise
-        print("sync status updated")
         if not no_attachments:
             self._sync_attachments(remoteTable)
             print("done attachments")
