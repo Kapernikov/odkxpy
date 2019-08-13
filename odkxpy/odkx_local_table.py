@@ -302,18 +302,33 @@ class OdkxLocalTable(object):
             ))
             fields = ','.join(['"{colname}"'.format(colname=colname) for colname in colnames])
             fields_v = ','.join(['st."{colname}"'.format(colname=colname) for colname in colnames])
-            connection.execute("""insert into {schema}.{table} ({fields},state) select {fields_v}, 'sync_attachments' as state from {schema}.{stagingtable} st
-            inner join 
-            ( 
-            select l.id, max(l."rowETag") as "rowETag" from {schema}.{stagingtable} l inner join
-            (select id, max("savepointTimestamp") as "savepointTimestamp" from {schema}.{stagingtable} group by id) latest_timestamp 
-            on l.id = latest_timestamp.id and l."savepointTimestamp" = latest_timestamp."savepointTimestamp" group by l.id
-            ) latest
-            on latest.id = st.id and 
-            latest."rowETag" = st."rowETag"
+            # connection.execute("""insert into {schema}.{table} ({fields},state) select {fields_v}, 'sync_attachments' as state from {schema}.{stagingtable} st
+            # inner join
+            # (
+            # select l.id, max(l."rowETag") as "rowETag" from {schema}.{stagingtable} l inner join
+            # (select id, max("savepointTimestamp") as "savepointTimestamp" from {schema}.{stagingtable} group by id) latest_timestamp
+            # on l.id = latest_timestamp.id and l."savepointTimestamp" = latest_timestamp."savepointTimestamp" group by l.id
+            # ) latest
+            # on latest.id = st.id and
+            # latest."rowETag" = st."rowETag"
+            # """.format(
+            #     schema=self.schema, table=self.tableId, stagingtable=self.tableId+'_staging', fields=fields, fields_v=fields_v
+            # ))
+            insert_sql = """
+            WITH latest AS (
+                SELECT p."rowETag",
+                       ROW_NUMBER() OVER(PARTITION BY p.id
+                                            ORDER BY p."savepointTimestamp" DESC, p."rowETag" DESC) AS rk
+                 FROM {schema}.{stagingtable} p)
+            insert into {schema}.{table} ({fields},state) select {fields_v}, 'sync_attachments' as state
+            from {schema}.{stagingtable} st inner join
+            (select latest."rowETag" from latest
+            WHERE latest.rk = 1) f
+            ON f."rowETag" = st."rowETag"
             """.format(
-                schema=self.schema, table=self.tableId, stagingtable=self.tableId+'_staging', fields=fields, fields_v=fields_v
-            ))
+                schema=self.schema, table=self.tableId, stagingtable=self.tableId+'_staging', fields=fields, fields_v=fields_v)
+            #print(insert_sql)
+            connection.execute(insert_sql)
             print("filled deftable")
             self._staging_to_log(connection, stagingtable=st)
             print("filled logtable")
@@ -468,7 +483,7 @@ class OdkxLocalTable(object):
         """
         self._cache_manifest(remoteTable)
         self._storage._cache_table_defintion(remoteTable.getTableDefinition())
-        self._sync_iter_pull(remoteTable)
+        self._sync_iter_pull(remoteTable, no_attachments)
         if local_changes_prefix is not None:
             localTable = self.tableId + '_' + local_changes_prefix
             self._sync_iter_push(remoteTable, localTable, force_push=force_push, no_attachments=no_attachments)
