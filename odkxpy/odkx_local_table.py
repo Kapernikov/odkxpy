@@ -125,6 +125,7 @@ class OdkxLocalTable(object):
                 con.execute(sql)
 
     def updateLocalStatusDb(self, dataETag, transaction: sqlalchemy.engine.Connection=None):
+        print(f"status will be {dataETag}")
         sql = f"""INSERT INTO {self.schema}.status_table ("table_name", "dataETag", "sync_date")
                  VALUES ('{self.tableId}', '{dataETag}', '{str(datetime.datetime.now())}')"""
         self._safeSql(sql, transaction)
@@ -270,6 +271,7 @@ class OdkxLocalTable(object):
             self._sync_attachments(remoteTable)
             return False
         new_etag = self.stageAllDataChanges(remoteTable)
+        print("filled staging table")
         st = self._getStagingTable()
         colnames = [x.name for x in st.columns]
         connection = self.engine.connect()
@@ -297,22 +299,31 @@ class OdkxLocalTable(object):
         except:
             trans.rollback()
             raise
-        trans2 = connection.begin()
+        print("filled deftable")
+        trans = connection.begin()
         try:
             self._staging_to_log(connection)
-            trans2.commit()
+            trans.commit()
         except:
-            trans2.rollback()
+            trans.rollback()
             connection.execute(
                 "delete from {schema}.{table} where id in (select id from {schema}.{stagingtable})".format(
                     schema=self.schema, table=self.tableId, stagingtable=self.tableId + '_staging'
                 ))
             raise
-        trans3 = connection.begin()
+        print("filled logtable")
+        trans = connection.begin()
         try:
-            self.updateLocalStatusDb(new_etag, connection)
+            print(f"status will be {new_etag}")
+            sql = f"""INSERT INTO {self.schema}.status_table ("table_name", "dataETag", "sync_date")
+                             VALUES ('{self.tableId}', '{new_etag}', '{str(datetime.datetime.now())}')"""
+            print(sql)
+            res = connection.execute(sql)
+            trans.commit()
+            print(res)
         except:
-            trans3.rollback()
+            print("rollback")
+            trans.rollback()
             connection.execute(
                 "delete from {schema}.{table} where id in (select id from {schema}.{stagingtable})".format(
                     schema=self.schema, table=self.tableId, stagingtable=self.tableId + '_staging'
@@ -322,8 +333,10 @@ class OdkxLocalTable(object):
                     schema=self.schema, table=self.tableId+ "_log", stagingtable=self.tableId + '_staging'
                 ))
             raise
+        print("sync status updated")
         if not no_attachments:
             self._sync_attachments(remoteTable)
+            print("done attachments")
         return True
 
 
