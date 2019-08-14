@@ -82,6 +82,8 @@ class OdkxLocalTable(object):
         self.schema = schema
         self.attachments = FilesystemAttachmentStore(os.getcwd() if attachment_store_path is None else attachment_store_path, useWindowsPaths=useWindowsCompatiblePaths)
         self.engine: sqlalchemy.engine.Engine = engine
+        self.genericCols = ['id', 'rowETag', 'savepointTimestamp', 'dataETagAtModification', 'savepointCreator', 'formId', 'savepointType', 'lastUpdateUser']
+        self.colAccess = ['defaultAccess',  'groupModify', 'groupPrivileged', 'groupReadOnly', 'rowOwner']
 
     def getTableDefinition(self) -> OdkxServerTableDefinition:
         return self._storage.getCachedTableDefinition(self.tableId)
@@ -209,12 +211,12 @@ class OdkxLocalTable(object):
             return False
         return True
 
-    def _writeSuccess(self, table, id):
+    def _writeSuccess(self, table, id, state_col):
         with self.engine.connect() as c:
-            c.execute(sqlalchemy.sql.text("update {schema}.{table} set state='synced' where id=:rowid".format(
-                schema=self.schema, table=table)), rowid=id)
+            c.execute(sqlalchemy.sql.text("update {schema}.{table} set {state_col}='synced' where id=:rowid".format(
+                schema=self.schema, table=table, state_col=state_col)), rowid=id)
 
-    def _sync_attachments(self, remoteTable: OdkxServerTable, localTable: str = None):
+    def _sync_attachments(self, remoteTable: OdkxServerTable, state_col:str = "state", localTable: str = None):
         """ Sync the attachments for the rowids in state "sync_attachments"
         """
         attach_cols = [x.elementKey for x in self.getTableDefinition().columns if x.elementType == 'rowpath']
@@ -238,8 +240,9 @@ class OdkxLocalTable(object):
         ids = []
         files_by_id = {}
         with self.engine.connect() as c:
-            result = c.execute("select id, {cols} from {schema}.{table} where state = 'sync_attachments'".format(
-                schema=self.schema, table=table, cols=",".join(['"{c}"'.format(c=c) for c in attach_cols])
+            result = c.execute("select DISTINCT ON (id) id, {cols} from {schema}.{table} where {state_col} = 'sync_attachments'".format(
+                schema=self.schema, table=table,
+                state_col=state_col, cols=",".join(['"{c}"'.format(c=c) for c in attach_cols])
             ))
             for r in result:
                 ids.append(r['id'])
@@ -249,10 +252,10 @@ class OdkxLocalTable(object):
         for id in ids:
             if mode == "pushing":
                 if self.uploadAttachments(remoteTable, id, files_by_id[id]):
-                    self._writeSuccess(table, id)
+                    self._writeSuccess(table, id, state_col)
             elif mode == "pulling":
                 if self.downloadAttachments(remoteTable, id, files_by_id[id]):
-                    self._writeSuccess(table, id)
+                    self._writeSuccess(table, id, state_col)
 
     def _staging_to_log(self, connection: sqlalchemy.engine.Connection = None, stagingtable = None):
         if stagingtable is not None:
@@ -349,8 +352,7 @@ class OdkxLocalTable(object):
         locTable = self._getTableMeta(self.tableId)
         locChangesCols = [x.name for x in locChanges.columns]
         locTableCols = [x.name for x in locTable.columns]
-        colsTakeLocally = [x.elementKey for x in tableDefinition if x.isMaterialized()] \
-                          + ['id', 'rowETag', 'savepointTimestamp', 'dataETagAtModification', 'savepointCreator', 'formId','savepointType', 'lastUpdateUser']
+        colsTakeLocally = [x.elementKey for x in tableDefinition if x.isMaterialized()] + self.genericCols
         if force_push:
             # take row ETag directly from server, making push always work even if we updated old data
             # it can still conflict but now only because somebody uploaded between us pulling and us pushing
@@ -367,13 +369,49 @@ class OdkxLocalTable(object):
         )
         return qry
 
-    def _sync_iter_push(self, remoteTable: OdkxServerTable, localTable: str, fullHistory: bool = False,
-                        force_push: bool = False, no_attachments: bool = False):
+    def _getHistoryBatch(self, localTable: str, state, mapping:dict = None):
+
+        if mapping is not None:
+            mappedCols = [v + '\" as \"' + k for k,v in mapping['mapping'].items()]
+            unchangedCols = mapping['common']
+            colsToTake = self.genericCols + mappedCols + unchangedCols + self.colAccess
+        else:
+            with self.engine.begin() as c:
+                res = c.execute("""SELECT column_name FROM information_schema.columns
+                             WHERE table_schema = '{schema}' AND table_name = '{table}';
+                          """.format(schema=self.schema, table=localTable))
+                resColumns = res.fetchall()
+            colsToTake = [col[0] for col in resColumns if col[0] != "state" and col[0] != "state_upload"]
+
+        # take row ETag directly from server, making push always work even if we updated old data
+        # it can still conflict but now only because somebody uploaded between us pulling and us pushing
+        colsToTake = [x for x in colsToTake if x not in ['rowETag']]
+
+        qry = """SELECT loc."{col_list}", rev."rowETag"
+                 FROM {schema}.{loctable} loc
+                 LEFT JOIN {schema}.{loctable}_rev rev
+                 ON loc.id = rev.id
+                 WHERE state_upload in ({state})""".format(
+            schema=self.schema,
+            loctable=localTable,
+            col_list='", loc."'.join(colsToTake),
+            state=','.join(["'" + x + "'" for x in state])
+        )
+        return qry
+
+
+    def _sync_iter_push(self, remoteTable: OdkxServerTable, localTable: str, mapping: dict = None,
+                        fullHistory: bool = False, force_push: bool = False, no_attachments: bool = False):
         definition = remoteTable.getTableDefinition().columns
         id_list_good = []
         id_list_conflict = []
+        if not fullHistory:
+            state_col = "state"
+        else:
+            state_col = "state_upload"
+            id_and_rowETag_list = []
 
-        if (self.hasUnresolvedConflicts(localTable)):
+        if (self.hasUnresolvedConflicts(localTable, state_col)):
             raise Exception("unresolved conflicts, cannot push changes")
 
         records = []
@@ -384,7 +422,7 @@ class OdkxLocalTable(object):
                     records.append(self.row2rec(row, definition, remoteTable.connection.user))
                     dataETag = self.getLocalDataETag()
         else:
-            state_qry = self._getHistoryBatch(localTable, state=['historyUpload'], force_push=force_push)
+            state_qry = self._getHistoryBatch(localTable, state=['historyUpload'], mapping=mapping)
             with self.engine.connect() as c:
                 for row in c.execute(state_qry):
                     records.append(self.row2rec(row, definition, remoteTable.connection.user, full=False))
@@ -395,35 +433,57 @@ class OdkxLocalTable(object):
         json = {'rows': records, 'dataETag': dataETag}
 
         rs = remoteTable.alterDataRows(json)
+
         for outcome in rs['rows']:
             if outcome['outcome'] == 'IN_CONFLICT':
                 id_list_conflict.append(outcome['id'])
+                if fullHistory:
+                   raise Exception("During this process. No one should update the server")
             else:
                 id_list_good.append(outcome['id'])
+                if fullHistory:
+                    id_and_rowETag_list.append([outcome['id'], outcome['rowETag']])
 
         def chunks(l, n):
             """Yield successive n-sized chunks from l."""
             for i in range(0, len(l), n):
                 yield l[i:i + n]
+
         for chunk in chunks(id_list_good, 10):
-            qry = """update {schema}.{localtable} set state='sync_attachments' where id in ({ids})""".format(
+            qry = """update {schema}.{localtable} set {state_col}='sync_attachments' where id in ({ids})""".format(
                 schema=self.schema,
                 localtable=localTable,
+                state_col=state_col,
                 ids=','.join(["'{c}'".format(c=c) for c in chunk])
             )
+            if fullHistory:
+                qry = qry + f""" and {state_col} LIKE 'historyUpload' """
             with self.engine.begin() as c:
                 c.execute(qry)
         for chunk in chunks(id_list_conflict, 10):
-            qry = """update {schema}.{localtable} set state='conflict' where id in ({ids})""".format(
+            qry = """update {schema}.{localtable} set {state_col}='conflict' where id in ({ids})""".format(
                 schema=self.schema,
                 localtable=localTable,
+                state_col=state_col,
                 ids=','.join(["'{c}'".format(c=c) for c in chunk])
             )
+            if fullHistory:
+                qry = qry + f""" and {state_col} LIKE 'historyUpload' """
             with self.engine.begin() as c:
                 print(qry)
                 c.execute(qry)
-        if not no_attachments:
-            self._sync_attachments(remoteTable, localTable)
+        if fullHistory:
+            df = pd.DataFrame(id_and_rowETag_list, columns=["id", "rowETag"])
+            ids = df['id'].tolist()
+            with self.engine.begin() as trans:
+                trans.execute("delete from {schema}.{table} where id in ({ids})".format(
+                    schema=self.schema,
+                    table=localTable+"_rev",
+                    ids=','.join([f"'{id_}'" for id_ in ids])
+                ))
+            df.to_sql(localTable+"_rev", self.engine, schema=self.schema, if_exists='append')
+        if not no_attachments and not fullHistory:
+            self._sync_attachments(remoteTable, state_col, localTable)
 
     def row2rec(self,row: dict, definition: List[OdkxServerColumnDefinition], default_user: str, full: bool = True):
         datacols = [x.elementKey for x in definition if x.isMaterialized()]
@@ -595,10 +655,10 @@ class OdkxLocalTable(object):
                     return True
         return False
 
-    def hasUnresolvedConflicts(self, def_tn: str):
+    def hasUnresolvedConflicts(self, def_tn: str, state_col:str):
         q_test = """
-        select count(id) as aantal from {schema}."{deftn}" where state in ('conflict')
-        """.format(schema=self.schema, deftn=def_tn)
+        select count(id) as aantal from {schema}."{deftn}" where {state_col} in ('conflict')
+        """.format(schema=self.schema, deftn=def_tn, state_col=state_col)
         with self.engine.connect() as c:
             res = c.execute(q_test)
             for r in res:
@@ -695,72 +755,57 @@ class OdkxLocalTable(object):
             """.format(schema=self.schema, def_tn=def_tn, stagingtable=staging_tn, w=w))
         self._copyMissingData(staging_tn, def_tn)
 
-
-    def _checkIfHistory(self, oldTableId=None):
-        """ check history tables exist
+    def archiveTables(self, historyPrefix, deleteOldTables: bool = False):
+        """ Archive the local table and all the related tables
         """
-        if oldTableId:
-            tableId = oldTableId
-        else:
-            tableId= self.tableId
+        with self.local_storage.engine.begin() as trans:
+            if deleteOldTables:
+                sql = """  DO
+                         $$
+                         DECLARE
+                             row record;
+                         BEGIN
+                             FOR row IN SELECT "table_name" FROM information_schema.tables WHERE "table_schema"='{schema}'
+                                 and ("table_name" like '{tableId}\_%%' or "table_name" = '{tableId}')
+                             LOOP
+                                 EXECUTE 'ALTER TABLE {schema}.' || row."table_name" || ' RENAME TO _archive_{history_nb}_' || row."table_name";
+                             END LOOP;
+                         END;
+                         $$;
+                         """.format(schema=self.schema, tableId=self.tableId, history_nb=historyPrefix)
+            else:
+                sql = """  DO
+                         $$
+                         DECLARE
+                             row record;
+                         BEGIN
+                             FOR row IN SELECT "table_name" FROM information_schema.tables WHERE "table_schema"='{schema}'
+                                 and ("table_name" like '{tableId}\_%%' or "table_name" = '{tableId}')
+                             LOOP
+                                 EXECUTE 'CREATE TABLE archive_{history_nb}_' || row."table_name" ||
+                                 'as SELECT * FROM {schema}.' || row."table_name";
+                             END LOOP;
+                         END;
+                         $$;
+                         """.format(schema=self.schema, tableId=self.tableId, history_nb=historyPrefix)
+            self._safeSql(sql, trans)
+            if deleteOldTables:
+                self.updateLocalStatusDb(None, trans)
+
+    def _checkStateUpload(self, table):
         with self.engine.begin() as c:
-            res = c.execute("""select * from information_schema.tables where "table_schema"='{schema}'
-                      and "table_name" like '\_history\_%%\_{tableId}\_log' limit 1""".format(schema=self.schema, tableId=tableId))
-            if res.first():
+            res = c.execute("""SELECT count(id) FROM {schema}.{table}
+                               WHERE {table}."state_upload" is null
+                               OR {table}."state_upload" like 'historyUpload';
+                            """.format(schema=self.schema, table=table))
+            if res.scalar() > 0:
                 return True
             else:
                 return False
 
-    def _checkLastHistoryNb(self, oldTableId=None):
-        """ check the number of the last existing history table
-        """
-        if oldTableId:
-            tableId = oldTableId
-        else:
-            tableId= self.tableId
-        with self.engine.begin() as c:
-            res = c.execute("""select cast(split_part(substring("table_name",10), '_', 1) as int) as history_nb from information_schema.tables where "table_schema"='{schema}'
-                      and "table_name" like '\_history\_%%\_{tableId}\_log' order by history_nb desc limit 1
-                      """.format(schema=self.schema, tableId=tableId))
-            return res.scalar()
-
-    def _addStateColumn(self, table, transaction: sqlalchemy.engine.Connection=None):
-        sql="""ALTER TABLE {schema}.{table} ADD COLUMN state VARCHAR;
-            """.format(schema=self.schema, table=table)
-        self._safeSql(sql, transaction)
-
-    def _getHistoryBatch(self, localTable: str, state, force_push: bool = False):
-        genericCols = ['id', 'rowETag', 'savepointTimestamp', 'dataETagAtModification', 'savepointCreator', 'formId', 'savepointType', 'lastUpdateUser']
-        colAccess = ['defaultAccess',  'groupModify', 'groupPrivileged', 'groupReadOnly', 'rowOwner']
-
-        if self.res is not None:
-            mappedCols = [v + '\" as \"' + k for k,v in self.res['mapping'].items()]
-            unchangedCols = self.res['common']
-            colsToTake = genericCols + mappedCols + unchangedCols + colAccess
-        else:
-            with self.engine.begin() as c:
-                res = c.execute("""SELECT column_name FROM information_schema.columns
-                             WHERE table_schema = '{schema}' AND table_name = '{table}';
-                          """.format(schema=self.schema, table=localTable))
-                resColumns = res.fetchall()
-            colsToTake = [col[0] for col in resColumns if col[0] != "state"]
-
-        if force_push:
-            # take row ETag directly from server, making push always work even if we updated old data
-            # it can still conflict but now only because somebody uploaded between us pulling and us pushing
-            colsToTake = [x for x in colsToTake if x not in ['rowETag']]
-
-        qry = """SELECT "{col_list}" FROM {schema}.{loctable} WHERE state in ({state})""".format(
-            schema=self.schema,
-            loctable=localTable,
-            col_list='", "'.join(colsToTake),
-            state=','.join(["'" + x + "'" for x in state])
-        )
-        return qry
-
     def _checkIfPreparedUpload(self, table):
         with self.engine.begin() as c:
-            res = c.execute("""SELECT * FROM {schema}.{table} WHERE "state" = 'uploadHistory'
+            res = c.execute("""SELECT * FROM {schema}.{table} WHERE "state_upload" = 'historyUpload'
                       """.format(schema=self.schema, table=table))
             if res.rowcount == 0:
                 return False
@@ -768,84 +813,41 @@ class OdkxLocalTable(object):
                 print('--> Already records prepared to be pushed: ', res.rowcount)
                 return True
 
-    def _prepareUpload(self, dataETag, table):
+    def _prepareUpload(self, table):
         with self.engine.begin() as c:
-            res = c.execute("""UPDATE {schema}.{table} SET state = 'historyUpload' WHERE {table}."dataETagAtModification" = '{dataETag}'
-                         AND {table}."state" is distinct from 'sync_attachments'
-                         AND {table}."state" is distinct from 'synced'
-                         AND {table}."state" is distinct from 'conflict';
-                      """.format(schema=self.schema, table=table, dataETag=dataETag))
+            res = c.execute("""UPDATE {schema}.{table} SET state_upload = 'historyUpload' WHERE "rowETag" in (
+                                   SELECT DISTINCT ON (id) "rowETag" FROM {schema}.{table}
+                                   WHERE {table}."state_upload" is distinct from 'sync_attachments'
+                                   AND {table}."state_upload" is distinct from 'synced'
+                                   AND {table}."state_upload" is distinct from 'conflict'
+                                   ORDER BY id ASC, "savepointTimestamp" ASC
+                              );
+                      """.format(schema=self.schema, table=table))
             print('--> Preparing to push records: ', res.rowcount)
 
-    def _constructSequence(self, table):
-        seq = []
-        with self.engine.begin() as c:
-            res = c.execute("""SELECT DISTINCT ON (sub."dataETagAtModification") sub."dataETagAtModification" FROM (
-                                SELECT * FROM {schema}.{table} ORDER BY "savepointTimestamp" asc
-                                ) as sub
+    def _addStateUploadColumn(self, table):
+        with self.engine.begin() as con:
+            res = con.execute("""SELECT column_name FROM information_schema.columns
+                         WHERE table_schema = '{schema}' AND table_name = '{table}'
+                         AND column_name LIKE 'state_upload';""".format(schema=self.schema, table=table))
+        if not res.first():
+            with self.engine.begin() as con:
+                con.execute("""ALTER TABLE {schema}.{table} ADD COLUMN state_upload VARCHAR;
                       """.format(schema=self.schema, table=table))
-            for row in res:
-                seq.append(row[0])
-        return seq
 
-
-    def toHistory(self, transaction: sqlalchemy.engine.Connection = None, deleteOldTables: bool = False):
-        print(self.tableId)
-        if self._checkIfHistory():
-            lastHistoryNb = self._checkLastHistoryNb()
-            newHistoryNb = int(lastHistoryNb) + 1
-        else:
-            newHistoryNb = 1
-
-        if deleteOldTables:
-            sql = """  DO
-                     $$
-                     DECLARE
-                         row record;
-                     BEGIN
-                         FOR row IN SELECT "table_name" FROM information_schema.tables WHERE "table_schema"='{schema}'
-                             and ("table_name" like '{tableId}\_%%' or "table_name" = '{tableId}')
-                         LOOP
-                             EXECUTE 'ALTER TABLE {schema}.' || row."table_name" || ' RENAME TO _history_{history_nb}_' || row."table_name";
-                         END LOOP;
-                     END;
-                     $$;
-                     """.format(schema=self.schema, tableId=self.tableId, history_nb=newHistoryNb)
-        else:
-
-            sql = """  DO
-                     $$
-                     DECLARE
-                         row record;
-                     BEGIN
-                         FOR row IN SELECT "table_name" FROM information_schema.tables WHERE "table_schema"='{schema}'
-                             and ("table_name" like '{tableId}\_%%' or "table_name" = '{tableId}')
-                         LOOP
-                             EXECUTE 'CREATE TABLE history_{history_nb}_' || row."table_name" ||
-                             'as SELECT * FROM {schema}.' || row."table_name";
-                         END LOOP;
-                     END;
-                     $$;
-                     """.format(schema=self.schema, tableId=self.tableId, history_nb=newHistoryNb)
-
-        self._safeSql(sql, transaction)
-        self._addStateColumn("_history_" + str(newHistoryNb) + "_" + self.tableId + "_log", transaction)
-
-    def uploadHistoryTable(self, oldTableId: str, remoteTable: OdkxServerTable, localTable: str = None, res: dict = None, force_push: bool = False):
+    def uploadHistory(self, remoteTable: OdkxServerTable, historyTable: str = None, mapping: dict = None):
         #  Calculate the order of history via the timestamp (we don't have historization with the ETag, only on the server)
+        # TODO: adapt this when fixed in the sync endpoint https://forum.opendatakit.org/t/get-changesets-api-from-the-odk-x-sync-protocol/21084/2
         """ Sync by batch using the history with only unique occurence of row id's
         """
-        self.res = res
-        if localTable is None:
-            if self._checkIfHistory(oldTableId):
-                lastHistoryNb = self._checkLastHistoryNb(oldTableId)
-                localTable = "_history_" + str(lastHistoryNb) + "_" + oldTableId + "_log"
-        print('--> Importing history table: ', localTable)
-        # sequence = remoteTable.getChangeSets(dataETag=self.getInitialDataETag)  
-        # TODO: enable this when fixed in the sync endpoint https://forum.opendatakit.org/t/get-changesets-api-from-the-odk-x-sync-protocol/21084/2
-        sequence = self._constructSequence(localTable)
-        for dataETag in sequence:
-            print('--> Pushing changes with dataETag: ', dataETag)
-            if not self._checkIfPreparedUpload(localTable):
-                self._prepareUpload(dataETag, localTable)
-            self._sync_iter_push(remoteTable, localTable, fullHistory=True, force_push=force_push)
+        if historyTable is None:
+            historyTable = self.tableId + "_log"
+        self._addStateUploadColumn(historyTable)
+
+        print('--> Importing history table: ', historyTable, " into remote table: ", remoteTable.tableId)
+        while self._checkStateUpload(historyTable):
+            if not self._checkIfPreparedUpload(historyTable):
+                self._prepareUpload(historyTable)
+            self._sync_iter_push(remoteTable, historyTable, mapping=mapping, fullHistory=True)
+        print('--> Syncing the attachments')
+        self._sync_attachments(remoteTable, "state_upload", historyTable)

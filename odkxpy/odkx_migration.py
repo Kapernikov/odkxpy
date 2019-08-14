@@ -42,11 +42,11 @@ class migrator(object):
     Process :
         - print compatibilities of the column between the 2 table definitions
         - sync the local table
-        - migrated the local table and all the linked tables to _history1_tableId...
+        - migrated the local table and all the linked tables to _archive1_tableId...
         - delete the old table definition
         - upload the new table definition
         - initialize the table with the new table definition
-        - reupload the whole history for compatible columns if a history table exist
+        - reupload the whole history for compatible columns if a archive table exist
 
     appRoot : path to the application root directory
     path : path to the definition.csv file or to an arbitrary file (relative to appRoot)
@@ -59,6 +59,7 @@ class migrator(object):
         self.meta = meta
         self.table = self.meta.getTable(self.tableId)
         self.local_storage = local_storage
+        self.schema = self.local_storage.schema
         self.appRoot = appRoot
         self.pathAppFiles = self.appRoot + "/app/config/assets/"
         self.pathTableFiles = self.appRoot + "/app/config/tables/" + self.newTableId
@@ -203,7 +204,7 @@ class migrator(object):
         oldTableDef = self.table.getTableDefinition()
         return self.compareTableDef(oldTableDef, newTableDef)
 
-    def createRemoteTable(self, newTableDef, force=False):
+    def _createRemoteTable(self, newTableDef, force=False):
         if newTableDef.tableId in [x.tableId for x in self.meta.getTables()]:
             raise Exception("The tableId of the table defined in the new table definition is already used on the server.")
         self.meta.createTable(newTableDef._asdict(True))
@@ -211,37 +212,61 @@ class migrator(object):
         self.table = self.meta.getTable(newTableDef.tableId)
         self.putFiles("table")
 
-    def uploadHistoryTable(self, oldTableId, table=None, res=None, force=False):
-        self.local_table = self.local_storage.getLocalTable(self.table)
-        self.local_table.uploadHistoryTable(oldTableId, self.table, localTable=table, res=res, force_push=force)
 
-    def migrate(self, force=False, deleteOldTables=False):
-        res = self.migrateReport()
-        if res['incompat'] and not force:
+    def _checkLastHistoryNb(self):
+        """ check the number of the last existing archive table
+        """
+        with self.local_table.engine.begin() as c:
+            res = c.execute("""select cast(split_part(substring("table_name",10), '_', 1) as int) as history_nb from information_schema.tables where "table_schema"='{schema}'
+                      and "table_name" like '\_archive\_%%\_{tableId}\_log' order by history_nb desc limit 1
+                      """.format(schema=self.schema, tableId=self.tableId))
+            return res.scalar()
+
+    def _checkIfArchive(self):
+        """ check archive tables exist
+        """
+        with self.local_table.engine.begin() as c:
+            res = c.execute("""select * from information_schema.tables where "table_schema"='{schema}'
+                      and "table_name" like '\_archive\_%%\_{tableId}\_log' limit 1""".format(schema=self.schema, tableId=self.tableId))
+            if res.first():
+                return True
+            else:
+                return False
+
+    def createNewTable(self, copyAttachments: bool = True, force=False):
+        newTableDef = self.getNewTableDefinition()
+        self._createRemoteTable(newTableDef, force)
+
+    def migrate(self, copyAttachments: bool = True, force=False):
+        mapping = self.migrateReport()
+        if mapping['incompat'] and not force:
             print("The migration was aborted")
             return
         self.local_table = self.local_storage.getLocalTable(self.table)
         self.local_table.sync(self.table)
         oldStorePath = self.local_table.attachments.path
-        oldTableId = self.local_table.tableId
-
-        with self.local_storage.engine.begin() as trans:
-            self.local_table.toHistory(trans, deleteOldTables)
-            if deleteOldTables:
-                self.local_table.updateLocalStatusDb(None, trans)
-
         newTableDef = self.getNewTableDefinition()
-        if deleteOldTables:
-            self.table.deleteTable(True)
+
+        if self.tableId == newTableDef.tableId:
+            raise Exception("Not permitted for now to migrate to the same namespace")
+            # if self._checkIfArchive():
+            #    lastHistoryNb = self._checkLastHistoryNb()
+            #    newHistoryNb = int(lastHistoryNb) + 1
+            # else:
+            #    newHistoryNb = 1
+            # self._archiveTables(newHistoryNb, deleteOldTables=True)
+            # historyTable = "_archive_" + str(lastHistoryNb) + "_" + self.local_table.tableId + "_log"
+            # self.table.deleteTable(True)
         else:
-            if self.tableId == newTableDef.tableId:
-                raise Exception("The namespace of the table defined in the new table definition is already used.\
-                                \nIf you want to continue, please use deleteOldTable=True")
-        self.createRemoteTable(newTableDef, force)
+            historyTable = None
+
+        self.table = self.meta.getTable(newTableDef.tableId)
+        self.local_table.uploadHistory(self.table, historyTable=historyTable, mapping=mapping)
+
+        # Working with the new local table
         self.local_table = self.local_storage.getLocalTable(self.table)
-        if self.tableId != self.table.tableId:
+
+        if self.tableId != self.table.tableId and copyAttachments:
             self.local_table.attachments.copyLocalFiles(oldStorePath)
 
-        self.uploadHistoryTable(oldTableId, res=res, force=force)
-        self.local_table.sync(self.table)
-        self.putFiles("app")
+        #self.local_table.sync(self.table)
