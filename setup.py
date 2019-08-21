@@ -5,6 +5,6 @@ setup(
     version = "0.1",
     packages = find_packages(),
     install_requires=[
-        'pandas', 'suds-jurko', 'requests', 'sqlalchemy'
+        'pandas', 'suds-jurko', 'requests', 'sqlalchemy', 'requests-toolbelt'
     ],
 )

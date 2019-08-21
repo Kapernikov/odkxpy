@@ -68,7 +68,7 @@ class FilesystemAttachmentStore(object):
             listFilDir = os.listdir(pathDir)
         else:
             listFilDir = []
-        return [OdkxLocalFile(**{'filename':f, 'md5hash': self.getMD5(id,f)}) for f in listFilDir if os.path.isfile(os.path.join(pathDir, f))]
+        return [OdkxLocalFile(**{'filename':f, 'md5hash': self.getMD5(id,f), 'pathFile': os.path.join(pathDir, f)}) for f in listFilDir if os.path.isfile(os.path.join(pathDir, f))]
 
     def copyLocalFiles(self, oldStorePath):
         print("copying files from:", oldStorePath, " to:", self.path)

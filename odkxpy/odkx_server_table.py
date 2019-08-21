@@ -1,11 +1,12 @@
-from .odkx_server_file import OdkxServerFile
+from .odkx_server_file import OdkxServerFile, OdkxServerFileManifest
 import ast
 import json
 from collections import namedtuple
 from .odkx_connection import OdkxConnection
 import datetime
 import logging
-from typing import List, Generator, NamedTuple, Union
+from typing import List, Generator, NamedTuple, Union, Sequence, Callable
+from requests_toolbelt import MultipartEncoder
 
 OdkxServerTableInfo = namedtuple('OdkxServerTableInfo', [
     'tableId', 'dataETag', 'schemaETag', 'selfUri', 'definitionUri', 'dataUri', 'instanceFilesUri', 'diffUri', 'aclUri', 'tableLevelManifestETag'
@@ -340,8 +341,9 @@ class OdkxServerTable(object):
             return r
         return self._parse_row(r)
 
-    def getAttachmentsManifest(self, rowId):
-        return [OdkxServerFile(**d) for d in self.connection.GET(self.getTableDefinitionRoot() + "/attachments/" + rowId + "/manifest")['files']]
+    def getAttachmentsManifest(self, rowId:str) -> Sequence[OdkxServerFile]:
+        url_frament = self.getTableDefinitionRoot() + "/attachments/" + rowId + "/manifest"
+        return [OdkxServerFile(**d) for d in self.connection.GET(url_frament)['files']]
 
     # I GOT HERE REFACTORING
 
@@ -351,13 +353,12 @@ class OdkxServerTable(object):
             self.getTableDefinitionRoot() + "/attachments/" + rowId + "/file/" + name,
             stream=stream, timeout=timeout)
 
-    def getAttachments(self, rowId, manifest):
-        # Not working - TODO
-        headers = {"Content-Type": "application/json"}
+    def getAttachments(self, rowId: str, manifest: Sequence[OdkxServerFile]):
+        payload = OdkxServerFileManifest(manifest).asdict()
         return self.connection.session.post(
             self.connection.server + self.connection.appID + '/' + self.getTableDefinitionRoot() + "/attachments/" +
             rowId + "/download",
-            headers=headers, data=manifest)
+            json=payload)
 
     def putAttachment(self, rowId, name, data):
         headers = {"Content-Type": "application/octet-stream"}
@@ -366,14 +367,20 @@ class OdkxServerTable(object):
             rowId + "/file/" + name,
             headers=headers, data=data)
 
-    def putAttachments(self, rowId, data):
-        # https://github.com/opendatakit/sync-endpoint/blob/c0300338a3ef133523f46b52038d0a0bf63b35ca/src/main/java/org/opendatakit/aggregate/odktables/impl/api/InstanceFileService.java
-        # Not working - TODO
-        headers = {"Content-Type": "multipart/form-data"}
-        return self.connection.session.post(
-            self.connection.server + self.connection.appID + '/' + self.getTableDefinitionRoot() + "/attachments/" +
-            rowId + "/upload",
-            headers=headers, data=data)
+    def putAttachments(self, rowId, manifest: Sequence["OdkxLocalFile"]):
+        """
+        :param manifest: ex. FilesystemAttachmentStore().getManifest(rowId)
+        """
+        fields = {f"{srv.filename}": (f"{srv.filename}", open(srv.filePath, "rb"),
+                                      srv.contentType, {"Name": "file"}) for srv in manifest}
+        multi_image = MultipartEncoder(fields=fields)
+        for part in multi_image.parts:
+            # this is fix for odkx-sync-endpoint using custom content disposition "file"
+            part.headers = part.headers.replace(b"form-data;", b"file;")
+        #didn't get it to work as stream
+        payload = multi_image.to_string()
+        return self.connection.POST(self.getTableDefinitionRoot() + "/attachments/" +
+            rowId + "/upload", data=payload, headers={"Content-Type": multi_image.content_type})
 
 
     def alterDataRows(self, json):
