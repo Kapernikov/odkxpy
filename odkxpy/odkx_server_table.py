@@ -367,12 +367,13 @@ class OdkxServerTable(object):
             rowId + "/file/" + name,
             headers=headers, data=data)
 
-    def putAttachments(self, rowId, manifest: Sequence["OdkxLocalFile"]):
+    def putAttachments(self, rowId, manifest: Sequence["OdkxLocalFile"], data: List[bytes]):
         """
         :param manifest: ex. FilesystemAttachmentStore().getManifest(rowId)
+        :param data: list of byte arrays
         """
-        fields = {f"{srv.filename}": (f"{srv.filename}", open(srv.filePath, "rb"),
-                                      srv.contentType, {"Name": "file"}) for srv in manifest}
+        fields = {f"{srv.filename}": (f"{srv.filename}", d,
+                                      srv.contentType, {"Name": "file"}) for srv, d in zip(manifest, data)}
         multi_image = MultipartEncoder(fields=fields)
         for part in multi_image.parts:
             # this is fix for odkx-sync-endpoint using custom content disposition "file"

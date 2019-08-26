@@ -11,6 +11,7 @@ import datetime
 import pandas as pd
 from enum import Enum
 from distutils.dir_util import copy_tree
+from requests_toolbelt.multipart import decoder as multi_decoder
 
 class LocalSyncMode(Enum):
     FULL = 1
@@ -62,13 +63,31 @@ class FilesystemAttachmentStore(object):
         os.rename(target + '-tmp', target)
         del response
 
+    def storeFileData(self, id:str, filename:str, data:bytes):
+        def chunked(n):
+            for i in range(0, len(data), n):
+                yield data[i:i + n]
+
+        target = self.getFileName(id, filename)
+        xid = id
+        if self.useWindowsPaths:
+            xid = id.replace(":", "")
+        os.makedirs(os.path.join(self.path, xid), exist_ok=True)
+        with open(target + '-tmp', 'wb') as out_file:
+            for chunk in chunked(1024):
+                out_file.write(chunk)
+        if os.path.isfile(target):
+            os.remove(target)
+        os.rename(target + '-tmp', target)
+        del data
+
     def getManifest(self, id) -> List[str]:
         pathDir = os.path.join(self.path, self.okWindows(id))
         if os.path.isdir(pathDir):
             listFilDir = os.listdir(pathDir)
         else:
             listFilDir = []
-        return [OdkxLocalFile(**{'filename':f, 'md5hash': self.getMD5(id,f), 'pathFile': os.path.join(pathDir, f)}) for f in listFilDir if os.path.isfile(os.path.join(pathDir, f))]
+        return [OdkxLocalFile(**{'filename':f, 'md5hash': self.getMD5(id,f)}) for f in listFilDir if os.path.isfile(os.path.join(pathDir, f))]
 
     def copyLocalFiles(self, oldStorePath):
         print("copying files from:", oldStorePath, " to:", self.path)
@@ -178,19 +197,26 @@ class OdkxLocalTable(object):
             return last_rs.dataETag
 
     def downloadAttachments(self, remoteTable: OdkxServerTable, rowId: str, target_file_list: List[str]):
-        got_files = []
-        for f in remoteTable.getAttachmentsManifest(rowId):
-            got_files.append(f.filename)
-            if self.attachments.hasFile(rowId, f.filename):
-                if self.attachments.getMD5(rowId, f.filename) == f.md5hash:
-                    continue
-            self.attachments.storeFile(rowId, f.filename,
-                                       remoteTable.getAttachment(rowId, f.filename, stream=True, timeout=300))
-        missing_files = [x for x in target_file_list if not x in got_files]
-        if len(missing_files) > 0:
-            print("pulling: MISSING FILES (trying again on next sync) for ", rowId, str(missing_files), "\ngot\n", str(got_files))
-            return False
-        return True
+        def filter_md5(f):
+            return not (self.attachments.hasFile(rowId, f.filename) and self.attachments.getMD5(rowId, f.filename) == f.md5hash)
+        server_manifests = remoteTable.getAttachmentsManifest(rowId)
+        got_files = [manifest.filename for manifest in server_manifests]
+        to_fetch = list(filter(filter_md5, server_manifests))
+        if to_fetch:
+            store_attachments = remoteTable.getAttachments(rowId, to_fetch)
+            if store_attachments.status_code != 200:
+                print("pulling: MISSING FILES (trying again on next sync) for ", rowId, str(to_fetch), "\ngot\n 0")
+                return False
+            else:
+                store_files = multi_decoder.MultipartDecoder.from_response(store_attachments)
+                for part in store_files.parts:
+                    self.attachments.storeFileData(rowId, str(part.headers[b'Content-Disposition']).split("=")[1][1:-2],
+                                                   part.content)
+                missing_files = [x for x in target_file_list if not x in got_files]
+                if len(missing_files) > 0:
+                    print("pulling: MISSING FILES (trying again on next sync) for ", rowId, str(missing_files), "\ngot\n", str(got_files))
+                    return False
+                return True
 
     def uploadAttachments(self, remoteTable: OdkxServerTable, rowId: str, target_file_list: List[str]):
         got_files = []
