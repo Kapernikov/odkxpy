@@ -493,20 +493,13 @@ class OdkxServerTable(object):
     def addAlterDeleteRecords(self, dataETag, formId, local_records, remote_records):
         lst_entry = []
         remoteIDs = [x['id'] for x in remote_records]
-        localIDs = [x['id'] for x in local_records]
 
         for item in local_records:
             if item['id'] not in remoteIDs:  # Add
-                #                lst_entry.append(self.dictAddRecord(formId, item))
                 lst_entry.append(item)
             elif item['id'] in remoteIDs:  # Alter
-                #                lst_entry.append(self.dictAlterRecord(item['id'], item))
                 lst_entry.append(item)
-
-        # TODO Delete with the delete field
-        # for item in remote_records:
-        #    if item['id'] not in localIDs:  # Delete
-        #        lst_entry.append(self.dictDeleteRecord(item['id']))
+            # TODO Delete
 
         json = {'rows': lst_entry, 'dataETag': dataETag}
         res = self.alterDataRows(json)
@@ -520,65 +513,6 @@ class OdkxServerTable(object):
             lst_entry.append(onerow)
         json = {'rows': lst_entry, 'dataETag': dataETag}
         return json
-
-    # Sync process components
-
-    def compareDataETag(self, dataETagLocal):
-        dataETag = self.getTableInfo().dataETag
-        if dataETag == dataETagLocal:
-            logging.info("same dataETag: " + dataETag)
-            return True
-        logging.info("different dataETag: " +
-                     str(dataETag) + ', ' + dataETagLocal)
-        return False
-
-    def getAllResults(self, mode, dataETag=None):
-        if mode == "AllDataRows":
-            dict_ = self.getAllDataRows()
-        elif mode == "AllDataChanges":
-            dict_ = self.getAllDataChanges(dataETag=dataETag)
-
-        notFinished = dict_['hasMoreResults']
-        cursor = dict_['webSafeResumeCursor']
-        while notFinished:
-            logging.info("more rows ...")
-            if mode == 'AllDataChanges':
-                moreRes = self.getAllDataChanges(
-                    dataETag=dataETag, cursor=cursor)
-            elif mode == 'AllDataRows':
-                moreRes = self.getAllDataRows(cursor=cursor)
-            notFinished = moreRes['hasMoreResults']
-            cursor = moreRes['webSafeResumeCursor']
-            dict_["rows"].extend(moreRes["rows"])
-        del dict_['tableUri']
-        del dict_['webSafeRefetchCursor']
-        del dict_['webSafeBackwardCursor']
-        del dict_['webSafeResumeCursor']
-        del dict_['hasMoreResults']
-        del dict_['hasPriorResults']
-        return dict_
-
-    def push(self, local_records, formId):
-        logging.info("Pushing")
-        dataETag = self.getTable()['dataETag']
-        remote_records = self.getAllResults('AllDataRows')['rows']
-        return self.addAlterDeleteRecords(dataETag, formId, local_records, remote_records)
-
-    def pull(self, dataETagLocal):
-        logging.info("Pulling")
-        return self.getAllResults('AllDataChanges', dataETag=dataETagLocal)
-
-    # Sync process
-
-    def tryPushOrPull(self, dataETagLocal, local_records, formId):
-        """
-        """
-        if self.compareDataETag(dataETagLocal):
-            logging.info("Update server")
-            return self.push(local_records, formId)
-        else:
-            logging.info("Local client needs to be updated")
-            return self.pull(dataETagLocal)
 
     def __repr__(self):
         return 'OdkxServerTable(' + self.tableId + ')'
