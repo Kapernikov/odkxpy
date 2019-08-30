@@ -36,7 +36,7 @@ class FilesystemAttachmentStore(object):
         return os.path.isfile(self.getFileName(id, filename))
 
     def openLocalFile(self, id, filename):
-        filename = os.path.join(self.path, id, filename)
+        filename = os.path.join(self.path, self.okWindows(id), filename)
         #with open(filename, 'rb') as file_:
         #    file_data = file_.read()
         #return file_data
@@ -99,7 +99,7 @@ class OdkxLocalTable(object):
         self.tableId = tableId
         self._storage = storage
         self.schema = schema
-        self.attachments = FilesystemAttachmentStore(os.getcwd() if attachment_store_path is None else attachment_store_path, useWindowsPaths=useWindowsCompatiblePaths)
+        self.attachments = FilesystemAttachmentStore(os.getcwd() if attachment_store_path is None else attachment_store_path, useWindowsPaths=storage.useWindowsCompatiblePaths)
         self.engine: sqlalchemy.engine.Engine = engine
         self.genericCols = ['id', 'rowETag', 'savepointTimestamp', 'dataETagAtModification', 'savepointCreator', 'formId', 'savepointType', 'lastUpdateUser']
         self.colAccess = ['defaultAccess',  'groupModify', 'groupPrivileged', 'groupReadOnly', 'rowOwner']
@@ -198,7 +198,7 @@ class OdkxLocalTable(object):
 
     def downloadAttachments(self, remoteTable: OdkxServerTable, rowId: str, target_file_list: List[str]):
         def filter_md5(f):
-            return not (self.attachments.hasFile(rowId, f.filename) and self.attachments.getMD5(rowId, f.filename) == f.md5hash)
+            return not (self.attachments.hasFile(rowId, f.filename) and self.attachments.getMD5(rowId, f.filename) == f.md5hash) and f.contentLength
         server_manifests = remoteTable.getAttachmentsManifest(rowId)
         got_files = [manifest.filename for manifest in server_manifests]
         to_fetch = list(filter(filter_md5, server_manifests))
@@ -221,6 +221,7 @@ class OdkxLocalTable(object):
     def uploadAttachments(self, remoteTable: OdkxServerTable, rowId: str, target_file_list: List[str]):
         got_files = []
         remoteManifest = remoteTable.getAttachmentsManifest(rowId)
+        push_files = []
         for f in self.attachments.getManifest(rowId):
             got_files.append(f.filename)
             remoteFileProperties = next((x for x in remoteManifest if x.filename == f.filename), None)
@@ -228,7 +229,11 @@ class OdkxLocalTable(object):
                 if remoteFileProperties.md5hash == f.md5hash:
                     continue
             print(rowId, f.filename)
-            res = remoteTable.putAttachment(rowId, f.filename, self.attachments.openLocalFile(rowId, f.filename))
+            with self.attachments.openLocalFile(rowId, f.filename) as datafile:
+                data = datafile.read()
+            push_files.append((f, data))
+        if push_files:
+            res = remoteTable.putAttachments(rowId, *zip(*push_files))
             print(res)
 
         missing_files = [x for x in target_file_list if x not in got_files]
@@ -246,7 +251,6 @@ class OdkxLocalTable(object):
         """ Sync the attachments for the rowids in state "sync_attachments"
         """
         attach_cols = [x.elementKey for x in self.getTableDefinition().columns if x.elementType == 'rowpath']
-
         if localTable:
             mode = "pushing"
             with self.engine.begin() as c:
@@ -623,21 +627,22 @@ class OdkxLocalTable(object):
         """ reset the given columns in this table from the latest version (eg you blanked them and you don't want the blanked version to be uploaded)
         warning: external_id needs to be a UNIQUE field!
         """
-        col_expr = ",".join([
-            """"{c}" = {schema}."{master}"."{c}" """.format(schema=self.schema, tn=table, master=self.tableId, c=x)
-            for x in col_list])
+        if col_list:
+            col_expr = ",".join([
+                """"{c}" = {schema}."{master}"."{c}" """.format(schema=self.schema, tn=table, master=self.tableId, c=x)
+                for x in col_list])
 
-        qry = """
-            UPDATE {schema}."{tn}" set {col_expr} FROM {schema}."{master}" WHERE {schema}."{tn}"."{extid}" = {schema}."{master}"."{extid}"
-        """.format(
-            schema=self.schema,
-            master = self.tableId,
-            tn = table,
-            extid = external_id,
-            col_expr = col_expr
-        )
-        with self.engine.begin() as c:
-            c.execute(qry)
+            qry = """
+                UPDATE {schema}."{tn}" set {col_expr} FROM {schema}."{master}" WHERE {schema}."{tn}"."{extid}" = {schema}."{master}"."{extid}"
+            """.format(
+                schema=self.schema,
+                master = self.tableId,
+                tn = table,
+                extid = external_id,
+                col_expr = col_expr
+            )
+            with self.engine.begin() as c:
+                c.execute(qry)
 
     def localSyncFromDataframe(self, source_prefix: str, external_id_column: str, df: pd.DataFrame, localSyncMode: LocalSyncMode = LocalSyncMode.FULL):
         """

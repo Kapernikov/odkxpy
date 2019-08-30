@@ -373,7 +373,7 @@ class OdkxServerTable(object):
         :param data: list of byte arrays
         """
         fields = {f"{srv.filename}": (f"{srv.filename}", d,
-                                      srv.contentType, {"Name": "file"}) for srv, d in zip(manifest, data)}
+                                      srv.contentType or "image/jpg", {"Name": "file"}) for srv, d in zip(manifest, data)}
         multi_image = MultipartEncoder(fields=fields)
         for part in multi_image.parts:
             # this is fix for odkx-sync-endpoint using custom content disposition "file"
