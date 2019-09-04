@@ -81,7 +81,7 @@ class FilesystemAttachmentStore(object):
         os.rename(target + '-tmp', target)
         del data
 
-    def getManifest(self, id) -> List[str]:
+    def getManifest(self, id) -> List[OdkxLocalFile]:
         pathDir = os.path.join(self.path, self.okWindows(id))
         if os.path.isdir(pathDir):
             listFilDir = os.listdir(pathDir)
@@ -760,7 +760,7 @@ class OdkxLocalTable(object):
     def archiveTables(self, historyPrefix, deleteOldTables: bool = False):
         """ Archive the local table and all the related tables
         """
-        with self.local_storage.engine.begin() as trans:
+        with self._storage.engine.begin() as trans:
             if deleteOldTables:
                 sql = """  DO
                          $$
