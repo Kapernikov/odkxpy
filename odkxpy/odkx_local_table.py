@@ -146,17 +146,9 @@ class OdkxLocalTable(object):
                 con.execute(sql)
 
     def updateLocalStatusDb(self, dataETag, connection: sqlalchemy.engine.Connection=None):
-        if connection is None:
-            connection = self.engine.connect()
-        trans = connection.begin()
         sql = f"""INSERT INTO {self.schema}.status_table ("table_name", "dataETag", "sync_date")
                  VALUES ('{self.tableId}', '{dataETag}', '{str(datetime.datetime.now())}')"""
-        try:
-            connection.execute(sql)
-            trans.commit()
-        except:
-            trans.rollback()
-            print("failed update local status")
+        self._safeSql(sql, connection)
 
 
     def row_asdict(self, r: OdkxServerTableRow):
@@ -292,8 +284,6 @@ class OdkxLocalTable(object):
             st = stagingtable
         else:
             st = self._getStagingTable()
-        if connection is None:
-            connection = self.engine.connect()
         colnames = [x.name for x in st.columns]
         fields = ','.join(['"{colname}"'.format(colname=colname) for colname in colnames])
         sql="insert into {schema}.{logtable} ({fields}) select {fields} from {schema}.{stagingtable}".format(
@@ -302,13 +292,8 @@ class OdkxLocalTable(object):
                 fields=fields,
                 stagingtable=self.tableId+'_staging'
             )
-        trans = connection.begin()
-        try:
-            connection.execute(sql)
-            trans.commit()
-        except:
-            trans.rollback()
-            print(f"failed staging to log")
+        self._safeSql(sql, connection)
+
 
     def hasIncomingChanges(self, remoteTable: OdkxServerTable) -> bool:
         """
@@ -323,30 +308,16 @@ class OdkxLocalTable(object):
             self._sync_attachments(remoteTable)
             return False
         new_etag = self.stageAllDataChanges(remoteTable)
-        print("filled staging table")
         st = self._getStagingTable()
         colnames = [x.name for x in st.columns]
-        connection = self.engine.connect()
-        trans = connection.begin()
-        # sync up data
-        try:
-            connection.execute("delete from {schema}.{table} where id in (select id from {schema}.{stagingtable})".format(
+        with self.engine.begin() as trans:
+            # delete rows to be updated
+            trans.execute("delete from {schema}.{table} where id in (select id from {schema}.{stagingtable})".format(
                 schema=self.schema, table=self.tableId, stagingtable=self.tableId + '_staging'
             ))
             fields = ','.join(['"{colname}"'.format(colname=colname) for colname in colnames])
             fields_v = ','.join(['st."{colname}"'.format(colname=colname) for colname in colnames])
-            # connection.execute("""insert into {schema}.{table} ({fields},state) select {fields_v}, 'sync_attachments' as state from {schema}.{stagingtable} st
-            # inner join
-            # (
-            # select l.id, max(l."rowETag") as "rowETag" from {schema}.{stagingtable} l inner join
-            # (select id, max("savepointTimestamp") as "savepointTimestamp" from {schema}.{stagingtable} group by id) latest_timestamp
-            # on l.id = latest_timestamp.id and l."savepointTimestamp" = latest_timestamp."savepointTimestamp" group by l.id
-            # ) latest
-            # on latest.id = st.id and
-            # latest."rowETag" = st."rowETag"
-            # """.format(
-            #     schema=self.schema, table=self.tableId, stagingtable=self.tableId+'_staging', fields=fields, fields_v=fields_v
-            # ))
+            # insert new and updated rows
             insert_sql = """
             WITH latest AS (
                 SELECT p."rowETag",
@@ -361,19 +332,11 @@ class OdkxLocalTable(object):
             """.format(
                 schema=self.schema, table=self.tableId, stagingtable=self.tableId+'_staging', fields=fields, fields_v=fields_v)
             #print(insert_sql)
-            connection.execute(insert_sql)
-            print("filled deftable")
-            self._staging_to_log(connection, stagingtable=st)
-            print("filled logtable")
-            self.updateLocalStatusDb(new_etag, connection)
-            print(f"status will be {new_etag}")
-            trans.commit()
-        except:
-            trans.rollback()
-            raise
+            trans.execute(insert_sql)
+            self._staging_to_log(trans, stagingtable=st)
+            self.updateLocalStatusDb(new_etag, trans)
         if not no_attachments:
             self._sync_attachments(remoteTable)
-            print("done attachments")
         return True
 
 
