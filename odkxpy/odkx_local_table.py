@@ -286,11 +286,19 @@ class OdkxLocalTable(object):
             st = self._getStagingTable()
         colnames = [x.name for x in st.columns]
         fields = ','.join(['"{colname}"'.format(colname=colname) for colname in colnames])
-        sql="insert into {schema}.{logtable} ({fields}) select {fields} from {schema}.{stagingtable}".format(
+        prefixed_fields = ','.join(['stage."{colname}"'.format(colname=colname) for colname in colnames])
+        sql="""
+        insert into {schema}.{logtable} ({fields}) 
+        select {prefixed_fields} 
+        from {schema}.{stagingtable} stage left outer join {schema}.{logtable} log
+        on stage."rowETag" = log."rowETag"
+        where log."rowETag" is null
+        """.format(
                 schema= self.schema,
                 logtable=self.tableId+'_log',
                 fields=fields,
-                stagingtable=self.tableId+'_staging'
+                stagingtable=self.tableId+'_staging',
+                prefixed_fields=prefixed_fields
             )
         self._safeSql(sql, connection)
 
