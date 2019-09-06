@@ -209,6 +209,7 @@ class OdkxLocalTable(object):
                     print("pulling: MISSING FILES (trying again on next sync) for ", rowId, str(missing_files), "\ngot\n", str(got_files))
                     return False
                 return True
+        return True
 
     def uploadAttachments(self, remoteTable: OdkxServerTable, rowId: str, target_file_list: List[str]):
         got_files = []
