@@ -32,6 +32,7 @@ def formdef_class(base):
             if value is None:
                 raise KeyError
             return value
+
     return FormDef
 
 def properties_class(base):
@@ -45,6 +46,7 @@ def properties_class(base):
         survey_formId = sqlalchemy.Column(sqlalchemy.String)
         document = sqlalchemy.Column(
             sqlalchemy.dialects.postgresql.JSONB(none_as_null=False))
+
     return TableProperties
 
 
@@ -53,18 +55,14 @@ class OdkManifestCache:
         self._storage: "SqlLocalStorage" = storage
         self._connection: OdkxConnection = connection
 
-    def _cache_object(self, manifest:OdkxServerFile, orm_def: type, orm_mapper:Callable[[Any], Any], connection_url:str):
+    def _cache_object(self, manifest:OdkxServerFile, orm_def: type, orm_mapper:Callable[[Any], Any], connection_url:str, session):
         #table could not exist
         orm_def.__table__.create(bind=self._storage.engine, checkfirst=True)
-
-        with self._storage.local_session_scope() as session:
-            cached_obj = session.query(orm_def).filter_by(filename=manifest.filename).first()
-            if cached_obj is None or cached_obj.md5hash != manifest.md5hash:
-                # needs update
-                
-                data = self._connection.GET(connection_url)
-                session.merge(orm_mapper(data))
-
+        cached_obj = session.query(orm_def).filter_by(filename=manifest.filename).first()
+        if cached_obj is None or cached_obj.md5hash != manifest.md5hash:
+            # needs update
+            data = self._connection.GET(connection_url)
+            session.merge(orm_mapper(data))
     
 
 class OdkTableManifestCache(OdkManifestCache):
@@ -74,8 +72,6 @@ class OdkTableManifestCache(OdkManifestCache):
         # orm objects and session should be same for caching purposes
         self.FormDef = formdef_class(storage.declarative_base())
         self.TableProperties = properties_class(storage.declarative_base())
-        self.FormDef.__table__.create(bind=self._storage.engine, checkfirst=True)
-        self.TableProperties.__table__.create(bind=self._storage.engine, checkfirst=True)
 
     def _formDef_mapper(self, manifest_file,  tableId):
         def mapper(obj:Any):
@@ -104,12 +100,12 @@ class OdkTableManifestCache(OdkManifestCache):
             if manifest_file.filename.endswith("formDef.json"):
                 manifest = manifest_file
                 FormDef = self.FormDef
-                super()._cache_object( manifest, FormDef, self._formDef_mapper(manifest, tableId), connection_url="files/2/" + manifest.filename )
+                super()._cache_object( manifest, FormDef, self._formDef_mapper(manifest, tableId), "files/2/" + manifest.filename, self.session)
             if manifest_file.filename.endswith("properties.csv"):
                 if tableId not in manifest_file.filename:
                     raise ValueError(f"manifest files must belong to {tableId}")
                 super()._cache_object(manifest_file, self.TableProperties, self._properties_mapper(manifest_file, tableId),
-                 connection_url="tables/" + tableId + "/properties/2")
+                 "tables/" + tableId + "/properties/2", self.session)
                 
 
     def getCachedFormDef(self, tableId:str, formId:str) -> Any:

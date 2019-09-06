@@ -1,5 +1,4 @@
 import sqlalchemy
-from contextlib import contextmanager
 from .odkx_server_table import OdkxServerTable, OdkxServerTableDefinition
 from .odkx_local_table import OdkxLocalTable
 from sqlalchemy.orm import sessionmaker
@@ -32,18 +31,6 @@ class SqlLocalStorage(object):
         self.initializeLocalStorage(server_table)
         return OdkxLocalTable(server_table.tableId, self.engine, self.schema, filestore, useWindowsCompatiblePaths=self.useWindowsCompatiblePaths, storage=self)
 
-    @contextmanager
-    def local_session_scope(self):
-        session = self.Session()
-        try:
-            yield session
-            session.commit()
-        except:
-            session.rollback()
-            raise
-        finally:
-            session.close()
-
     def declarative_base(self) -> sqlalchemy.ext.declarative.api.DeclarativeMeta:
         return declarative_base(metadata = sqlalchemy.MetaData(schema = self.schema)) 
 
@@ -64,29 +51,29 @@ class SqlLocalStorage(object):
             tabledef.__table__.create(bind=self.engine, checkfirst=True)
         return tabledef
 
-    def _cache_table_defintion(self, table_defintion: OdkxServerTableDefinition):
+    def _cache_table_defintion(self, table_defintion: OdkxServerTableDefinition, session):
         """
         cache latest seen combination tableID, schemaETag
         """
         table = self._create_cache(False)
 
         # store defintion
-        with self.local_session_scope() as session:
-            previous = session.query(table).filter_by(tableId = table_defintion.tableId).first()
-
-            if not previous or previous.schemaETag != table_defintion.schemaETag:
-                session.merge(table(
-                    tableId=table_defintion.tableId,
-                    schemaETag=table_defintion.schemaETag,
-                    odkxpydef=table_defintion._asdict()
-                ))
+        previous = session.query(table).filter_by(tableId = table_defintion.tableId).first()
+        if not previous or previous.schemaETag != table_defintion.schemaETag:
+            session.merge(table(
+                tableId=table_defintion.tableId,
+                schemaETag=table_defintion.schemaETag,
+                odkxpydef=table_defintion._asdict()
+            ))
 
     def getCachedTableDefinition(self, tableId: str) -> OdkxServerTableDefinition:
-        with self.local_session_scope() as session:
-            result = session.query(self._create_cache(False)).filter_by(tableId=tableId).first()
-            if not result:
-                raise CacheNotFoundError()
-            return OdkxServerTableDefinition.tableDefinitionOf(result.odkxpydef)
+        session = self.Session()
+        result = session.query(self._create_cache(False)).filter_by(tableId=tableId).first()
+        if not result:
+            raise CacheNotFoundError()
+        reply = OdkxServerTableDefinition.tableDefinitionOf(result.odkxpydef)
+        session.close()
+        return reply
 
     def getCachedLocalTable(self, tableId: str) -> OdkxLocalTable:
         # cache check
@@ -96,7 +83,15 @@ class SqlLocalStorage(object):
 
     def initializeLocalStorage(self, server_table: OdkxServerTable):
         tabledef = server_table.getTableDefinition()
-        self._cache_table_defintion(tabledef)
+        session = self.Session()
+        try:
+            self._cache_table_defintion(tabledef, session)
+            session.commit()
+        except:
+            session.rollback()
+            raise
+        finally:
+            session.close()
         self._createLocalTable(tabledef, log_table=False,
                                create_state_col=True)
         self._createLocalTable(tabledef, log_table=True)
