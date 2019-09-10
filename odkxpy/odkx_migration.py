@@ -247,6 +247,8 @@ class migrator(object):
         oldStorePath = self.local_table.attachments.path
         newTableDef = self.getNewTableDefinition()
 
+        self.table = self.meta.getTable(newTableDef.tableId)
+
         if self.tableId == newTableDef.tableId:
             raise Exception("Not permitted for now to migrate to the same namespace")
             # if self._checkIfArchive():
@@ -254,13 +256,12 @@ class migrator(object):
             #    newHistoryNb = int(lastHistoryNb) + 1
             # else:
             #    newHistoryNb = 1
-            # self._archiveTables(newHistoryNb, deleteOldTables=True)
+            # self._archiveTables(self.table, newHistoryNb, deleteOldTables=True)
             # historyTable = "_archive_" + str(lastHistoryNb) + "_" + self.local_table.tableId + "_log"
             # self.table.deleteTable(True)
         else:
             historyTable = None
 
-        self.table = self.meta.getTable(newTableDef.tableId)
         self.local_table.uploadHistory(self.table, historyTable=historyTable, mapping=mapping)
 
         # Working with the new local table

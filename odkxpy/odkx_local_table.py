@@ -757,7 +757,7 @@ class OdkxLocalTable(object):
             """.format(schema=self.schema, def_tn=def_tn, stagingtable=staging_tn, w=w))
         self._copyMissingData(staging_tn, def_tn)
 
-    def archiveTables(self, historyPrefix, deleteOldTables: bool = False):
+    def archiveTables(self, remoteTable: OdkxServerTable, historyPrefix: str, deleteOldTables: bool = False):
         """ Archive the local table and all the related tables
         """
         with self._storage.engine.begin() as trans:
@@ -793,6 +793,7 @@ class OdkxLocalTable(object):
             self._safeSql(sql, trans)
             if deleteOldTables:
                 self.updateLocalStatusDb(None, trans)
+                remoteTable.deleteTable(True)
 
     def _checkStateUpload(self, table):
         with self.engine.begin() as c:
