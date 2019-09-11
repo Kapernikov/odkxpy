@@ -58,7 +58,29 @@ first_table_local.localSyncFromDataframe('my_calculation', 'my_id',df, odkxpy.Lo
 first_table_local.sync(first_table, "my_calculation")
 ```
 
+## Migrating a table
+
+If you want to migrate a table from one namespace to another, you can use the Migrator.
+The history will be kept as well as the attachments.
+The migration is only possible if you have activate the pull request 31.
+
+con = odkxpy.OdkxConnection('https://odk_sync_endpoint.com/odktables/', 'user', 'password')
+```python
+Migrator = migrator(tableId, newTableId, meta, local_storage, odkx_application_path, path, pathMapping)
+Migrator.migrateReport()
+Migrator.migrate()
+```
+
+## Uploading app files
+You can then update your application to take into account to changes. 
+The parameter upload_mode controls with is updated from the application repository("table", "app", "table_html_js", "file").
+```python
+Migrator.putFiles(upload_mode)
+```
+
+
 # Authors
 
 Frank Dekervel
 Ludovic Santos
+Ezechiël Syx
