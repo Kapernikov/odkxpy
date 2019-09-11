@@ -1,4 +1,4 @@
-from .odkx_server_table import OdkxServerTable, OdkxServerTableDefinition
+from .odkx_server_table import OdkxServerTableDefinition
 from .odkx_server_meta import OdkxServerMeta
 from .local_storage_sql import SqlLocalStorage
 import os

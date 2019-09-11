@@ -836,8 +836,15 @@ class OdkxLocalTable(object):
     def uploadHistory(self, remoteTable: OdkxServerTable, historyTable: str = None, mapping: dict = None):
         """
         Upload history by batch from an history table.
-        Each batch contains only unique occurence of rowids
-        The savepointTimestamp is used to order the records as we don't have historization locally with the dataETagAtModification
+        Each batch contains only unique occurence of rowids.
+        The savepointTimestamp is used to order the records as we don't have historization locally with the dataETagAtModification.
+        It is possible to rename old columns or even to duplicates old columns in the new table using the mapping dict.
+
+        :param remoteTable: the target table where we will upload the history
+        :param historyTable: the table that contains the historic records
+        :param mapping: the mapping dict defines which old columns are renamed or duplicated (if the old column is present in the new table definition).
+            The keys are the old columns, the values are the corresponding new columns.
+        :return:
         """
         if historyTable is None:
             historyTable = self.tableId + "_log"
