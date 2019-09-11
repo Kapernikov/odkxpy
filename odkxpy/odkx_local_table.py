@@ -37,9 +37,6 @@ class FilesystemAttachmentStore(object):
 
     def openLocalFile(self, id, filename):
         filename = os.path.join(self.path, self.okWindows(id), filename)
-        #with open(filename, 'rb') as file_:
-        #    file_data = file_.read()
-        #return file_data
         return open(filename, 'rb')
 
     def getMD5(self, id, filename):
@@ -209,6 +206,7 @@ class OdkxLocalTable(object):
                     print("pulling: MISSING FILES (trying again on next sync) for ", rowId, str(missing_files), "\ngot\n", str(got_files))
                     return False
                 return True
+        return True
 
     def uploadAttachments(self, remoteTable: OdkxServerTable, rowId: str, target_file_list: List[str]):
         got_files = []
@@ -236,8 +234,7 @@ class OdkxLocalTable(object):
 
     def _writeSuccess(self, table, id, state_col):
         with self.engine.connect() as c:
-            c.execute(sqlalchemy.sql.text("update {schema}.{table} set {state_col}='synced' where id=:rowid".format(
-                schema=self.schema, table=table, state_col=state_col)), rowid=id)
+            c.execute(sqlalchemy.sql.text(f"""update {self.schema}."{table}" set {state_col}='synced' where id=:rowid"""), rowid=id)
 
     def _sync_attachments(self, remoteTable: OdkxServerTable, state_col:str = "state", localTable: str = None):
         """ Sync the attachments for the rowids in state "sync_attachments"
@@ -262,7 +259,7 @@ class OdkxLocalTable(object):
         ids = []
         files_by_id = {}
         with self.engine.connect() as c:
-            result = c.execute("select DISTINCT ON (id) id, {cols} from {schema}.{table} where {state_col} = 'sync_attachments'".format(
+            result = c.execute("""select DISTINCT ON (id) id, {cols} from {schema}."{table}" where {state_col} = 'sync_attachments'""".format(
                 schema=self.schema, table=table,
                 state_col=state_col, cols=",".join(['"{c}"'.format(c=c) for c in attach_cols])
             ))
@@ -288,9 +285,9 @@ class OdkxLocalTable(object):
         fields = ','.join(['"{colname}"'.format(colname=colname) for colname in colnames])
         prefixed_fields = ','.join(['stage."{colname}"'.format(colname=colname) for colname in colnames])
         sql="""
-        insert into {schema}.{logtable} ({fields}) 
-        select {prefixed_fields} 
-        from {schema}.{stagingtable} stage left outer join {schema}.{logtable} log
+        insert into {schema}."{logtable}" ({fields})
+        select {prefixed_fields}
+        from {schema}."{stagingtable}" stage left outer join {schema}."{logtable}" log
         on stage."rowETag" = log."rowETag"
         where log."rowETag" is null
         """.format(
@@ -320,7 +317,7 @@ class OdkxLocalTable(object):
         colnames = [x.name for x in st.columns]
         with self.engine.begin() as trans:
             # delete rows to be updated
-            trans.execute("delete from {schema}.{table} where id in (select id from {schema}.{stagingtable})".format(
+            trans.execute("""delete from {schema}."{table}" where id in (select id from {schema}."{stagingtable}")""".format(
                 schema=self.schema, table=self.tableId, stagingtable=self.tableId + '_staging'
             ))
             fields = ','.join(['"{colname}"'.format(colname=colname) for colname in colnames])
@@ -331,9 +328,9 @@ class OdkxLocalTable(object):
                 SELECT p."rowETag",
                        ROW_NUMBER() OVER(PARTITION BY p.id
                                             ORDER BY p."savepointTimestamp" DESC, p."rowETag" DESC) AS rk
-                 FROM {schema}.{stagingtable} p)
-            insert into {schema}.{table} ({fields},state) select {fields_v}, 'sync_attachments' as state
-            from {schema}.{stagingtable} st inner join
+                 FROM {schema}."{stagingtable}" p)
+            insert into {schema}."{table}" ({fields},state) select {fields_v}, 'sync_attachments' as state
+            from {schema}."{stagingtable}" st inner join
             (select latest."rowETag" from latest
             WHERE latest.rk = 1) f
             ON f."rowETag" = st."rowETag"
@@ -361,7 +358,7 @@ class OdkxLocalTable(object):
 
         colsTakeLocally = [x for x in locChangesCols if x in colsTakeLocally]
         col_list = ['l."{x}"'.format(x=x) if x in colsTakeLocally else 'r."{x}"'.format(x=x) for x in locTableCols]
-        qry = "SELECT {col_list} FROM {schema}.{loctable} l LEFT OUTER JOIN {schema}.{table} r ON l.id = r.id WHERE l.state in ({state})".format(
+        qry = """SELECT {col_list} FROM {schema}."{loctable}" l LEFT OUTER JOIN {schema}."{table}" r ON l.id = r.id WHERE l.state in ({state})""".format(
             schema=self.schema,
             loctable=localTable,
             table=self.tableId,
@@ -378,9 +375,8 @@ class OdkxLocalTable(object):
             colsToTake = self.genericCols + mappedCols + unchangedCols + self.colAccess
         else:
             with self.engine.begin() as c:
-                res = c.execute("""SELECT column_name FROM information_schema.columns
-                             WHERE table_schema = '{schema}' AND table_name = '{table}';
-                          """.format(schema=self.schema, table=localTable))
+                res = c.execute(f"""SELECT column_name FROM information_schema.columns
+                             WHERE table_schema = '{self.schema}' AND table_name = '{localTable}';""")
                 resColumns = res.fetchall()
             colsToTake = [col[0] for col in resColumns if col[0] != "state" and col[0] != "state_upload"]
 
@@ -389,8 +385,8 @@ class OdkxLocalTable(object):
         colsToTake = [x for x in colsToTake if x not in ['rowETag']]
 
         qry = """SELECT loc."{col_list}", rev."rowETag"
-                 FROM {schema}.{loctable} loc
-                 LEFT JOIN {schema}.{loctable}_rev rev
+                 FROM {schema}."{loctable}" loc
+                 LEFT JOIN {schema}."{loctable}"_rev rev
                  ON loc.id = rev.id
                  WHERE state_upload in ({state})""".format(
             schema=self.schema,
@@ -451,7 +447,7 @@ class OdkxLocalTable(object):
                 yield l[i:i + n]
 
         for chunk in chunks(id_list_good, 10):
-            qry = """update {schema}.{localtable} set {state_col}='sync_attachments' where id in ({ids})""".format(
+            qry = """update {schema}."{localtable}" set {state_col}='sync_attachments' where id in ({ids})""".format(
                 schema=self.schema,
                 localtable=localTable,
                 state_col=state_col,
@@ -462,7 +458,7 @@ class OdkxLocalTable(object):
             with self.engine.begin() as c:
                 c.execute(qry)
         for chunk in chunks(id_list_conflict, 10):
-            qry = """update {schema}.{localtable} set {state_col}='conflict' where id in ({ids})""".format(
+            qry = """update {schema}."{localtable}" set {state_col}='conflict' where id in ({ids})""".format(
                 schema=self.schema,
                 localtable=localTable,
                 state_col=state_col,
@@ -477,7 +473,7 @@ class OdkxLocalTable(object):
             df = pd.DataFrame(id_and_rowETag_list, columns=["id", "rowETag"])
             ids = df['id'].tolist()
             with self.engine.begin() as trans:
-                trans.execute("delete from {schema}.{table} where id in ({ids})".format(
+                trans.execute("""delete from {schema}."{table}" where id in ({ids})""".format(
                     schema=self.schema,
                     table=localTable+"_rev",
                     ids=','.join([f"'{id_}'" for id_ in ids])
@@ -568,7 +564,7 @@ class OdkxLocalTable(object):
 
     def fillHashColumn(self, table_name):
         columns_to_hash = self._getHashedColumns(table_name)
-        qry = """UPDATE {schema}.{table} set hash=md5(ROW({cols})::TEXT)""".format(
+        qry = """UPDATE {schema}."{table}" set hash=md5(ROW({cols})::TEXT)""".format(
             schema=self.schema,
             table=table_name,
             cols=','.join(['"{c}"'.format(c=c) for c in columns_to_hash]))
@@ -721,23 +717,22 @@ class OdkxLocalTable(object):
             FROM {schema}."{realtable}" WHERE {schema}."{stagingtable}"."{extid}" = {schema}."{realtable}"."{extid}"
         """
         with self.engine.begin() as c:
-            c.execute("update {schema}.{stagingtable} set state=null".format(schema=self.schema, stagingtable=staging_tn))
-            c.execute("update {schema}.{stagingtable} set deleted=False where deleted is null".format(schema=self.schema, stagingtable=staging_tn))
+            c.execute(f"""update {self.schema}."{staging_tn}" set state=null""")
+            c.execute(f"""update {self.schema}."{staging_tn}" set deleted=False where deleted is null""")
             c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=def_tn, extid=external_id_column))
             c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=self.tableId, extid=external_id_column))
 
         self.fillHashColumn(staging_tn)
         qry = """
             UPDATE {schema}."{stagingtable}" set "rowETag" = {schema}."{realtable}"."rowETag", state='unchanged'
-            FROM {schema}."{realtable}" WHERE {schema}."{stagingtable}".id = {schema}."{realtable}".id AND 
+            FROM {schema}."{realtable}" WHERE {schema}."{stagingtable}".id = {schema}."{realtable}".id AND
             {schema}."{stagingtable}".hash = {schema}."{realtable}".hash
         """
         with self.engine.begin() as c:
             c.execute(qry.format(schema=self.schema, stagingtable=staging_tn, realtable=def_tn))
-            c.execute("""update {schema}."{stagingtable}" set state='new', "createUser" = 'localSync'
-                        where state is null""".format(schema=self.schema, stagingtable=staging_tn))
-            c.execute("""update {schema}."{stagingtable}" set "savepointTimestamp"=now(), 
-                        "savepointCreator"='localSync', 
+            c.execute(f"""update {self.schema}."{staging_tn}" set state='new', "createUser" = 'localSync' where state is null""")
+            c.execute("""update {schema}."{stagingtable}" set "savepointTimestamp"=now(),
+                        "savepointCreator"='localSync',
                         "savepointType"='COMPLETE',
                         "formId"='localSync',
                         "lastUpdateUser"='localSync'
@@ -797,9 +792,9 @@ class OdkxLocalTable(object):
 
     def _checkStateUpload(self, table):
         with self.engine.begin() as c:
-            res = c.execute("""SELECT count(id) FROM {schema}.{table}
-                               WHERE {table}."state_upload" is null
-                               OR {table}."state_upload" like 'historyUpload';
+            res = c.execute("""SELECT count(id) FROM {schema}."{table}"
+                               WHERE "{table}"."state_upload" is null
+                               OR "{table}"."state_upload" like 'historyUpload';
                             """.format(schema=self.schema, table=table))
             if res.scalar() > 0:
                 return True
@@ -808,7 +803,7 @@ class OdkxLocalTable(object):
 
     def _checkIfPreparedUpload(self, table):
         with self.engine.begin() as c:
-            res = c.execute("""SELECT * FROM {schema}.{table} WHERE "state_upload" = 'historyUpload'
+            res = c.execute("""SELECT * FROM {schema}."{table}" WHERE "state_upload" = 'historyUpload'
                       """.format(schema=self.schema, table=table))
             if res.rowcount == 0:
                 return False
@@ -818,11 +813,11 @@ class OdkxLocalTable(object):
 
     def _prepareUpload(self, table):
         with self.engine.begin() as c:
-            res = c.execute("""UPDATE {schema}.{table} SET state_upload = 'historyUpload' WHERE "rowETag" in (
-                                   SELECT DISTINCT ON (id) "rowETag" FROM {schema}.{table}
-                                   WHERE {table}."state_upload" is distinct from 'sync_attachments'
-                                   AND {table}."state_upload" is distinct from 'synced'
-                                   AND {table}."state_upload" is distinct from 'conflict'
+            res = c.execute("""UPDATE {schema}."{table}" SET state_upload = 'historyUpload' WHERE "rowETag" in (
+                                   SELECT DISTINCT ON (id) "rowETag" FROM {schema}."{table}"
+                                   WHERE "{table}"."state_upload" is distinct from 'sync_attachments'
+                                   AND "{table}"."state_upload" is distinct from 'synced'
+                                   AND "{table}"."state_upload" is distinct from 'conflict'
                                    ORDER BY id ASC, "savepointTimestamp" ASC
                               );
                       """.format(schema=self.schema, table=table))
@@ -835,7 +830,7 @@ class OdkxLocalTable(object):
                          AND column_name LIKE 'state_upload';""".format(schema=self.schema, table=table))
         if not res.first():
             with self.engine.begin() as con:
-                con.execute("""ALTER TABLE {schema}.{table} ADD COLUMN state_upload VARCHAR;
+                con.execute("""ALTER TABLE {schema}."{table}" ADD COLUMN state_upload VARCHAR;
                       """.format(schema=self.schema, table=table))
 
     def uploadHistory(self, remoteTable: OdkxServerTable, historyTable: str = None, mapping: dict = None):
