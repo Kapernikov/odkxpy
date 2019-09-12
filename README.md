@@ -81,7 +81,10 @@ It will involve the `uploadHistory` function as migration keep the history of th
 Note that the attachments are also kept and that the migration is only possible if you have a [patched odkx server](#patched-odkx-server-with-PR-31).
 
 ```python
-Migrator = migrator(tableId, newTableId, meta, local_storage, odkx_application_path, path, pathMapping)
+# odkx_application_path: path to the application root directory
+# path_definition_csv: path to the definition.csv file (relative to appRoot)
+
+Migrator = migrator(tableId, newTableId, meta, local_storage, odkx_application_path, path_definition_csv, a_mapping_dict)
 
 # Get a report on the incompatibilities before the migration
 Migrator.migrateReport()
@@ -91,22 +94,23 @@ Migrator.migrate()
 
 ## Uploading application and table files
 The library is also able to update application files. 
-The upload_mode parameter controls what is updated:
+The appRoot paramter is the location of the application.
+The mode parameter controls what is updated:
 - "table": update the table files of the current table
 - "app": update the application files
 - "table_html_js": update the html/js table files of the current table
 - "file": update a specific file
 
 ```python
-AppManager = appManager(tableId, newTableId, meta, local_storage, odkx_application_path, path, pathMapping)
-AppManager.putFiles(upload_mode)
+AppManager = OdkxAppManager(tableId, meta, appRoot)
+AppManager.putFiles(mode)
 ```
 
 ## Patched odkx server with PR 31
 
 By default, the /diff API only returns the latest version of a row in one fetch block. 
 An option has been added in the "" API to get all versions of rows.
-When the full history is needed, now one can pass getFullLog=true to get ALL changes
+When the full history is needed, now one can pass getFullLog=true to get all changes.
 
 More information can be found on [github](https://github.com/opendatakit/sync-endpoint/pull/31)
 
