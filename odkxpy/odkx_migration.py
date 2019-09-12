@@ -1,17 +1,10 @@
 from .odkx_server_table import OdkxServerTableDefinition
 from .odkx_server_meta import OdkxServerMeta
 from .local_storage_sql import SqlLocalStorage
-import os
+from .odkx_application_manager import OdkxAppManager
 import json
 import csv
 
-ctypes_map = {
-    '.js': 'application/x-javascript',
-    '.css': 'text/css',
-    '.csv': 'text/csv',
-    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    '.html': 'text/html',
-}
 
 class bidict(dict):
     """
@@ -48,14 +41,14 @@ class migrator(object):
         - initialize the table with the new table definition
         - reupload the whole history for compatible columns if an archive table exist
 
-    tableId : table that we want to migrate
-    newtableId : destination of the migrated table
-    appRoot : path to the application root directory
-    path : path to the definition.csv file or to an arbitrary file (relative to appRoot)
-    pathMapping : path to the mapping file (new : old) (relative to appRoot)
+    :param tableId: table that we want to migrate
+    :param newtableId: destination of the migrated table
+    :param appRoot: path to the application root directory
+    :param pathDef: path to the definition.csv file (relative to appRoot)
+    :param pathMapping: path to the mapping file (new : old) (relative to appRoot)
     """
 
-    def __init__(self, tableId: str, newTableId: str, meta: OdkxServerMeta, local_storage: SqlLocalStorage, appRoot: str, path: str = None, pathMapping: str = None):
+    def __init__(self, tableId: str, newTableId: str, meta: OdkxServerMeta, local_storage: SqlLocalStorage, appRoot: str, pathDef: str = None, pathMapping: str = None):
         self.tableId = tableId
         self.newTableId = newTableId
         self.meta = meta
@@ -63,13 +56,11 @@ class migrator(object):
         self.local_storage = local_storage
         self.schema = self.local_storage.schema
         self.appRoot = appRoot
-        self.pathAppFiles = self.appRoot + "/app/config/assets/"
-        self.pathTableFiles = self.appRoot + "/app/config/tables/" + self.newTableId
-        self.path = self.appRoot + "/" + path if path is not None else self.pathTableFiles + "/definition.csv"
+        self.pathDef = self.appRoot + "/" + pathDef if pathDef is not None else self.appRoot + "/app/config/tables/" + self.tableId + "/definition.csv"
         self.pathMapping = self.appRoot + "/" + pathMapping
 
     def _getNewTableDefinition(self) -> OdkxServerTableDefinition:
-        with open(self.path, newline='') as csvfile:
+        with open(self.pathDef, newline='') as csvfile:
             colList = list(csv.reader(csvfile))
         return OdkxServerTableDefinition._from_DefFile(self.newTableId, colList)
 
@@ -149,57 +140,6 @@ class migrator(object):
             print(json.dumps(incompat, indent=4))
         return {'mapping': validMapping, 'common': common, 'incompat': incompat}
 
-    def _getListOfFiles(self, dirName):
-        # create a list of file and sub directories
-        listOfFile = os.listdir(dirName)
-        allFiles = list()
-        # Iterate over all the entries
-        for entry in listOfFile:
-            # Create full path
-            fullPath = os.path.join(dirName, entry)
-            # If entry is a directory then get the list of files in this directory
-            if os.path.isdir(fullPath):
-                allFiles = allFiles + self._getListOfFiles(fullPath)
-            else:
-                allFiles.append(fullPath)
-        return allFiles
-
-    def putFiles(self, mode: str):
-        """Upload files to the OdkxServer
-
-           mode :
-                [app] for putting application files
-                [file] to put exactly one file
-                [table] to put table files
-        """
-        if mode == "app":
-            print("Putting global files")
-            localFiles = self._getListOfFiles(self.pathAppFiles)
-        elif mode == "file":
-            print("Putting one file : {path}".format(path=self.path))
-            localFiles = [self.path]
-        elif (mode == "table") or (mode == "table_html_js"):
-            print("Putting table files : {tableId}".format(tableId=self.newTableId))
-            localFiles = self._getListOfFiles(self.pathTableFiles)
-        else:
-            raise Exception("Unrecognized mode")
-
-        for f in localFiles:
-            if mode != "table_html_js" or (f.split('.')[-1] in ['html', 'js']):
-                print("uploading: " + f)
-                fhandle = open(f, "rb")
-                data = fhandle.read()
-                fhandle.close()
-                ctype = 'application/octet-stream'
-                for k, v in ctypes_map.items():
-                    if f.endswith(k):
-                        ctype = v
-                if mode == "app":
-                    self.meta.putFile(ctype, data, f)
-                else:
-                    el = f[len(self.pathTableFiles):]
-                    self.table.putFile(ctype, data, el)
-
     def migrateReport(self):
         """ Compare two table definitions in order to see if there incompatibilities
         """
@@ -218,7 +158,9 @@ class migrator(object):
         self.meta.createTable(newTableDef._asdict(True))
         # We update the info on the current loaded table in the migrator
         self.table = self.meta.getTable(newTableDef.tableId)
-        self.putFiles("table")
+
+        AppManager = OdkxAppManager(self.tableId, self.meta, self.appRoot)
+        AppManager.putFiles("table")
 
     def _checkLastHistoryNb(self):
         """ check the number of the last existing archive table
