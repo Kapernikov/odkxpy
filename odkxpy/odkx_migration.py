@@ -1,20 +1,14 @@
-from .odkx_server_table import OdkxServerTable, OdkxServerTableDefinition
+from .odkx_server_table import OdkxServerTableDefinition
 from .odkx_server_meta import OdkxServerMeta
 from .local_storage_sql import SqlLocalStorage
-import os
+from .odkx_application_manager import OdkxAppManager
 import json
 import csv
 
-ctypes_map = {
-    '.js': 'application/x-javascript',
-    '.css': 'text/css',
-    '.csv': 'text/csv',
-    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    '.html': 'text/html',
-}
 
 class bidict(dict):
     """
+    A Bidirectional dictionary
     https://stackoverflow.com/questions/3318625/how-to-implement-an-efficient-bidirectional-hash-table/3318808#3318808
     """
     def __init__(self, *args, **kwargs):
@@ -40,20 +34,21 @@ class migrator(object):
     """
     Utility to migrate a table from one table definition to another while keeping the compatible data
     Process :
-        - print compatibilities of the column between the 2 table definitions
+        - print compatibilities of the columns between the 2 table definitions
         - sync the local table
-        - migrated the local table and all the linked tables to _archive1_tableId...
-        - delete the old table definition
+        - archived the local table and all the linked tables
         - upload the new table definition
         - initialize the table with the new table definition
-        - reupload the whole history for compatible columns if a archive table exist
+        - reupload the whole history for compatible columns if an archive table exist
 
-    appRoot : path to the application root directory
-    path : path to the definition.csv file or to an arbitrary file (relative to appRoot)
-    pathMapping : path to the mapping file (new : old) (relative to appRoot)
+    :param tableId: table that we want to migrate
+    :param newtableId: destination of the migrated table
+    :param appRoot: path to the application root directory
+    :param pathDef: path to the definition.csv file (relative to appRoot)
+    :param pathMapping: path to the mapping file (new : old) (relative to appRoot)
     """
 
-    def __init__(self, tableId, newTableId, meta: OdkxServerMeta, local_storage: SqlLocalStorage, appRoot: str, path: str = None, pathMapping: str = None):
+    def __init__(self, tableId: str, newTableId: str, meta: OdkxServerMeta, local_storage: SqlLocalStorage, appRoot: str, pathDef: str = None, pathMapping: str = None):
         self.tableId = tableId
         self.newTableId = newTableId
         self.meta = meta
@@ -61,23 +56,21 @@ class migrator(object):
         self.local_storage = local_storage
         self.schema = self.local_storage.schema
         self.appRoot = appRoot
-        self.pathAppFiles = self.appRoot + "/app/config/assets/"
-        self.pathTableFiles = self.appRoot + "/app/config/tables/" + self.newTableId
-        self.path = self.appRoot + "/" + path if path is not None else self.pathTableFiles + "/definition.csv"
+        self.pathDef = self.appRoot + "/" + pathDef if pathDef is not None else self.appRoot + "/app/config/tables/" + self.tableId + "/definition.csv"
         self.pathMapping = self.appRoot + "/" + pathMapping
 
-    def getNewTableDefinition(self) -> OdkxServerTableDefinition:
-        with open(self.path, newline='') as csvfile:
+    def _getNewTableDefinition(self) -> OdkxServerTableDefinition:
+        with open(self.pathDef, newline='') as csvfile:
             colList = list(csv.reader(csvfile))
         return OdkxServerTableDefinition._from_DefFile(self.newTableId, colList)
 
-    def getColumnMapping(self) -> bidict:
+    def _getColumnMapping(self) -> bidict:
         with open(self.pathMapping) as file:
             mapping = json.load(file)["mapping"]
             bdMapping = bidict(mapping)
         return bdMapping
 
-    def getValidMapping(self, mapping, newColumns, oldColumns):
+    def _getValidMapping(self, mapping, newColumns, oldColumns) -> bidict:
         validMapping = bidict({})
         print("\nReport on the mapping: ")
         print("=========================")
@@ -91,7 +84,7 @@ class migrator(object):
         print(validMapping)
         return validMapping
 
-    def checkColumnsType(self, common, oldTableDef: OdkxServerTableDefinition, newTableDef: OdkxServerTableDefinition, validMapping: bidict):
+    def _checkColumnsType(self, common, oldTableDef: OdkxServerTableDefinition, newTableDef: OdkxServerTableDefinition, validMapping: bidict):
         incompat = []
         for item in common:
             if oldTableDef.getColDef(item) is None:
@@ -105,10 +98,10 @@ class migrator(object):
         return incompat
 
 
-    def compareTableDef(self, oldTableDef: OdkxServerTableDefinition, newTableDef: OdkxServerTableDefinition):
+    def _compareTableDef(self, oldTableDef: OdkxServerTableDefinition, newTableDef: OdkxServerTableDefinition):
         if self.pathMapping is not None:
-            mapping = self.getColumnMapping()
-            validMapping = self.getValidMapping(mapping, newTableDef.columnsKeyList, oldTableDef.columnsKeyList)
+            mapping = self._getColumnMapping()
+            validMapping = self._getValidMapping(mapping, newTableDef.columnsKeyList, oldTableDef.columnsKeyList)
             if validMapping:
                 oldColumnsMapped = []
                 for col in oldTableDef.columnsKeyList:
@@ -125,8 +118,7 @@ class migrator(object):
         deleted = sorted(list(set(oldColumnsMapped) - set(newTableDef.columnsKeyList)))
         new = sorted(list(set(newTableDef.columnsKeyList) - set(oldTableDef.columnsKeyList) - set(oldColumnsMapped)))
         common = sorted(list(set(newTableDef.columnsKeyList) & set(oldTableDef.columnsKeyList)))
-        incompat = self.checkColumnsType(common, oldTableDef, newTableDef, validMapping)
-
+        incompat = self._checkColumnsType(common, oldTableDef, newTableDef, validMapping)
 
         print("\nReport on the migration: ")
         print("=========================")
@@ -148,70 +140,27 @@ class migrator(object):
             print(json.dumps(incompat, indent=4))
         return {'mapping': validMapping, 'common': common, 'incompat': incompat}
 
-    def getListOfFiles(self, dirName):
-        # create a list of file and sub directories
-        listOfFile = os.listdir(dirName)
-        allFiles = list()
-        # Iterate over all the entries
-        for entry in listOfFile:
-            # Create full path
-            fullPath = os.path.join(dirName, entry)
-            # If entry is a directory then get the list of files in this directory
-            if os.path.isdir(fullPath):
-                allFiles = allFiles + self.getListOfFiles(fullPath)
-            else:
-                allFiles.append(fullPath)
-        return allFiles
-
-    def putFiles(self, mode: str):
-        """Upload files to the OdkxServer
-
-           mode :
-                [app] for putting application files
-                [file] to put exactly one file
-                [table] to put table files
-        """
-        if mode == "app":
-            print("Putting global files")
-            localFiles = self.getListOfFiles(self.pathAppFiles)
-        elif mode == "file":
-            print("Putting one file : {path}".format(path=self.path))
-            localFiles = [self.path]
-        elif (mode == "table") or (mode == "table_html_js"):
-            print("Putting table files : {tableId}".format(tableId=self.newTableId))
-            localFiles = self.getListOfFiles(self.pathTableFiles)
-        else:
-            raise Exception("Unrecognized mode")
-
-        for f in localFiles:
-            if mode != "table_html_js" or (f.split('.')[-1] in ['html', 'js']):
-                print("uploading: " + f)
-                fhandle = open(f, "rb")
-                data = fhandle.read()
-                fhandle.close()
-                ctype = 'application/octet-stream'
-                for k, v in ctypes_map.items():
-                    if f.endswith(k):
-                        ctype = v
-                if mode == "app":
-                    self.meta.putFile(ctype, data, f)
-                else:
-                    el = f[len(self.pathTableFiles):]
-                    self.table.putFile(ctype, data, el)
-
     def migrateReport(self):
-        newTableDef = self.getNewTableDefinition()
+        """ Compare two table definitions in order to see if there incompatibilities
+        """
+        newTableDef = self._getNewTableDefinition()
         oldTableDef = self.table.getTableDefinition()
-        return self.compareTableDef(oldTableDef, newTableDef)
+        return self._compareTableDef(oldTableDef, newTableDef)
 
-    def _createRemoteTable(self, newTableDef, force=False):
+    def createRemoteTable(self, newTableDef, force=False):
+        """
+        Create a new remote table if the table definition is not existing.
+        The table loaded in the migrator is updated.
+        The files associated to the table are also updated.
+        """
         if newTableDef.tableId in [x.tableId for x in self.meta.getTables()]:
             raise Exception("The tableId of the table defined in the new table definition is already used on the server.")
         self.meta.createTable(newTableDef._asdict(True))
         # We update the info on the current loaded table in the migrator
         self.table = self.meta.getTable(newTableDef.tableId)
-        self.putFiles("table")
 
+        AppManager = OdkxAppManager(self.tableId, self.meta, self.appRoot)
+        AppManager.putFiles("table")
 
     def _checkLastHistoryNb(self):
         """ check the number of the last existing archive table
@@ -233,24 +182,25 @@ class migrator(object):
             else:
                 return False
 
-    def createNewTable(self, copyAttachments: bool = True, force=False):
-        newTableDef = self.getNewTableDefinition()
-        self._createRemoteTable(newTableDef, force)
-
     def migrate(self, copyAttachments: bool = True, force=False):
+        """
+        Migrate an ODKX table from a namespace to another one.
+        The history is kept as well as the attachements
+        """
+        # checking the compatibility
         mapping = self.migrateReport()
         if mapping['incompat'] and not force:
             print("The migration was aborted")
             return
+
         self.local_table = self.local_storage.getLocalTable(self.table)
         self.local_table.sync(self.table)
         oldStorePath = self.local_table.attachments.path
-        newTableDef = self.getNewTableDefinition()
-
-        self.table = self.meta.getTable(newTableDef.tableId)
+        newTableDef = self._getNewTableDefinition()
 
         if self.tableId == newTableDef.tableId:
-            raise Exception("Not permitted for now to migrate to the same namespace")
+            raise Exception("For now, not permitted to migrate to the same namespace")
+            # self.table = self.meta.getTable(newTableDef.tableId)
             # if self._checkIfArchive():
             #    lastHistoryNb = self._checkLastHistoryNb()
             #    newHistoryNb = int(lastHistoryNb) + 1
@@ -262,12 +212,14 @@ class migrator(object):
         else:
             historyTable = None
 
+        self.createRemoteTable(newTableDef, force)
         self.local_table.uploadHistory(self.table, historyTable=historyTable, mapping=mapping)
 
         # Working with the new local table
         self.local_table = self.local_storage.getLocalTable(self.table)
 
+        # Copying the attachments of the old table
         if self.tableId != self.table.tableId and copyAttachments:
             self.local_table.attachments.copyLocalFiles(oldStorePath)
 
-        #self.local_table.sync(self.table)
+        self.local_table.sync(self.table)
