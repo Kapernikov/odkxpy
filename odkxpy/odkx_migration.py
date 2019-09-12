@@ -151,7 +151,7 @@ class migrator(object):
         """
         Create a new remote table if the table definition is not existing.
         The table loaded in the migrator is updated.
-        The files associeted to table are also updated.
+        The files associated to the table are also updated.
         """
         if newTableDef.tableId in [x.tableId for x in self.meta.getTables()]:
             raise Exception("The tableId of the table defined in the new table definition is already used on the server.")
