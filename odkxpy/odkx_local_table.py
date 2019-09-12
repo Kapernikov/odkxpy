@@ -185,35 +185,23 @@ class OdkxLocalTable(object):
         if not last_rs is None:
             return last_rs.dataETag
 
-    def downloadAttachments(self, remoteTable: OdkxServerTable, rowId: str, target_file_list: List[str]):
+    def isMissingFiles(self, rowId: str, target_file_list: List[str], manifest_files: List[str], other_manifest_files: List[str] = None):
+        missing_files = [x for x in target_file_list if x not in manifest_files]
+        if other_manifest_files:
+            missing_files.extend([x for x in other_manifest_files if x not in manifest_files])
+        if len(missing_files) > 0:
+            print("MISSING FILES (trying again on next sync) for ", rowId, str(missing_files), "\ngot\n", str(manifest_files))
+            return True
+
+    def attachmentsToDownload(self, remoteManifest: List[str], rowId: str):
         def filter_md5(f):
             return not (self.attachments.hasFile(rowId, f.filename) and self.attachments.getMD5(rowId, f.filename) == f.md5hash) and f.contentLength
-        server_manifests = remoteTable.getAttachmentsManifest(rowId)
-        got_files = [manifest.filename for manifest in server_manifests]
-        to_fetch = list(filter(filter_md5, server_manifests))
-        if to_fetch:
-            store_attachments = remoteTable.getAttachments(rowId, to_fetch)
-            if store_attachments.status_code != 200:
-                print("pulling: MISSING FILES (trying again on next sync) for ", rowId, str(to_fetch), "\ngot\n 0")
-                return False
-            else:
-                store_files = multi_decoder.MultipartDecoder.from_response(store_attachments)
-                for part in store_files.parts:
-                    self.attachments.storeFileData(rowId, str(part.headers[b'Content-Disposition']).split("=")[1][1:-2],
-                                                   part.content)
-                missing_files = [x for x in target_file_list if not x in got_files]
-                if len(missing_files) > 0:
-                    print("pulling: MISSING FILES (trying again on next sync) for ", rowId, str(missing_files), "\ngot\n", str(got_files))
-                    return False
-                return True
-        return True
+        to_fetch = list(filter(filter_md5, remoteManifest))
+        return to_fetch
 
-    def uploadAttachments(self, remoteTable: OdkxServerTable, rowId: str, target_file_list: List[str]):
-        got_files = []
-        remoteManifest = remoteTable.getAttachmentsManifest(rowId)
-        push_files = []
+    def attachmentsToUpload(self, remoteManifest, rowId: str):
+        to_push = []
         for f in self.attachments.getManifest(rowId):
-            got_files.append(f.filename)
             remoteFileProperties = next((x for x in remoteManifest if x.filename == f.filename), None)
             if remoteFileProperties:
                 if remoteFileProperties.md5hash == f.md5hash:
@@ -221,14 +209,38 @@ class OdkxLocalTable(object):
             print(rowId, f.filename)
             with self.attachments.openLocalFile(rowId, f.filename) as datafile:
                 data = datafile.read()
-            push_files.append((f, data))
-        if push_files:
-            res = remoteTable.putAttachments(rowId, *zip(*push_files))
+            to_push.append((f, data))
+        return to_push
+
+    def downloadAttachments(self, remoteTable: OdkxServerTable, rowId: str, target_file_list: List[str]):
+        remoteManifest = remoteTable.getAttachmentsManifest(rowId)
+        remote_manifest_files = [f.filename for f in remoteManifest]
+        to_fetch = self.attachmentsToDownload(remoteManifest, rowId)
+        if to_fetch:
+            store_attachments = remoteTable.getAttachments(rowId, to_fetch)
+            if store_attachments.status_code != 200:
+                if self.isMissingFiles(rowId, target_file_list, []):
+                    return False
+            else:
+                store_files = multi_decoder.MultipartDecoder.from_response(store_attachments)
+                for part in store_files.parts:
+                    self.attachments.storeFileData(rowId, str(part.headers[b'Content-Disposition']).split("=")[1][1:-2],
+                                                   part.content)
+                local_manifest_files = [f.filename for f in self.attachments.getManifest(rowId)]
+                if self.isMissingFiles(rowId, target_file_list, remote_manifest_files, local_manifest_files):
+                    return False
+        return True
+
+    def uploadAttachments(self, remoteTable: OdkxServerTable, rowId: str, target_file_list: List[str]):
+        remoteManifest = remoteTable.getAttachmentsManifest(rowId)
+        local_manifest_files = [f.filename for f in self.attachments.getManifest(rowId)]
+        to_push = self.attachmentsToUpload(remoteManifest, rowId)
+        if to_push:
+            res = remoteTable.putAttachments(rowId, *zip(*to_push))
             print(res)
 
-        missing_files = [x for x in target_file_list if x not in got_files]
-        if len(missing_files) > 0:
-            print("pushing: MISSING FILES (trying again on next sync) for ", rowId, str(missing_files), "\ngot\n", str(got_files))
+        remote_manifest_files = [f.filename for f in remoteManifest]
+        if self.isMissingFiles(rowId, target_file_list, local_manifest_files, remote_manifest_files):
             return False
         return True
 
