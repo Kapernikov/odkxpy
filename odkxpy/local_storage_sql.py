@@ -146,6 +146,24 @@ class SqlLocalStorage(object):
         t.append_column(sqlalchemy.Column('sync_date', sqlalchemy.DateTime))
         meta.create_all()
 
+    def _createRevisionTable(self, historyTable):
+        s_tn = historyTable + "_rev"
+        full_tn = self.schema + '.' + s_tn
+        meta = sqlalchemy.MetaData()
+        meta.bind = self.engine
+        t = None
+        try:
+            meta.reflect(only=[s_tn], schema=self.schema, views=True)
+            if not full_tn in meta:
+                t = sqlalchemy.Table(s_tn, meta, schema=self.schema)
+            else:
+                t = meta.tables.get(full_tn)  # sqlalchemy.Table
+        except sqlalchemy.exc.InvalidRequestError:
+            t = sqlalchemy.Table(s_tn, meta, schema=self.schema)
+        t.append_column(sqlalchemy.Column('id', sqlalchemy.String(50)))
+        t.append_column(sqlalchemy.Column('rowETag', sqlalchemy.String(50)))
+        meta.create_all()
+
     def _createLocalTable(self, server_table: OdkxServerTableDefinition, log_table: bool = False, table_name_instead=None,
                           create_hash_col: bool = False, create_state_col: bool = False, only_create_datacols: Optional[List[str]] = None,
                           no_create_standard_pkey: bool = False):

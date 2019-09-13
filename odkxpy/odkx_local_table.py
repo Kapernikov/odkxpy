@@ -398,7 +398,7 @@ class OdkxLocalTable(object):
 
         qry = """SELECT loc."{col_list}", rev."rowETag"
                  FROM {schema}."{loctable}" loc
-                 LEFT JOIN {schema}."{loctable}"_rev rev
+                 LEFT JOIN {schema}."{loctable}_rev" as rev
                  ON loc.id = rev.id
                  WHERE state_upload in ({state})""".format(
             schema=self.schema,
@@ -490,7 +490,7 @@ class OdkxLocalTable(object):
                     table=localTable+"_rev",
                     ids=','.join([f"'{id_}'" for id_ in ids])
                 ))
-            df.to_sql(localTable+"_rev", self.engine, schema=self.schema, if_exists='append')
+            df.to_sql(localTable+"_rev", self.engine, schema=self.schema, if_exists='append', index=False)
         if not no_attachments and not fullHistory:
             self._sync_attachments(remoteTable, state_col, localTable)
 
@@ -536,10 +536,10 @@ class OdkxLocalTable(object):
         return result
 
     def _cache_manifest(self, remoteTable: OdkxServerTable):
-        with self._storage.local_session_scope() as session:
-            OdkTableManifestCache(session, self._storage, remoteTable.connection).do_sync(
-                self.tableId, remoteTable.getFileManifest()
-            )
+        session = self._storage.Session()
+        OdkTableManifestCache(session, self._storage, remoteTable.connection).do_sync(
+            self.tableId, remoteTable.getFileManifest()
+        )
 
     def sync(self, remoteTable: OdkxServerTable, local_changes_prefix: Optional[str] = None, force_push: bool = False, no_attachments: bool = False):
         """
@@ -551,7 +551,8 @@ class OdkxLocalTable(object):
         :return:
         """
         self._cache_manifest(remoteTable)
-        self._storage._cache_table_defintion(remoteTable.getTableDefinition())
+        session = self._storage.Session()
+        self._storage._cache_table_defintion(remoteTable.getTableDefinition(), session)
         self._sync_iter_pull(remoteTable, no_attachments)
         if local_changes_prefix is not None:
             localTable = self.tableId + '_' + local_changes_prefix
@@ -860,6 +861,7 @@ class OdkxLocalTable(object):
         """
         if historyTable is None:
             historyTable = self.tableId + "_log"
+        self._storage._createRevisionTable(historyTable)
         self._addStateUploadColumn(historyTable)
 
         print('--> Importing history table: ', historyTable, " into remote table: ", remoteTable.tableId)

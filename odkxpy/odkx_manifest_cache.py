@@ -47,6 +47,12 @@ def properties_class(base):
         document = sqlalchemy.Column(
             sqlalchemy.dialects.postgresql.JSONB(none_as_null=False))
 
+        def __getitem__(self, key):
+            value = getattr(self, key, None)
+            if value is None:
+                raise KeyError
+            return value
+
     return TableProperties
 
 
@@ -58,12 +64,18 @@ class OdkManifestCache:
     def _cache_object(self, manifest:OdkxServerFile, orm_def: type, orm_mapper:Callable[[Any], Any], connection_url:str, session):
         #table could not exist
         orm_def.__table__.create(bind=self._storage.engine, checkfirst=True)
-        cached_obj = session.query(orm_def).filter_by(filename=manifest.filename).first()
-        if cached_obj is None or cached_obj.md5hash != manifest.md5hash:
-            # needs update
-            data = self._connection.GET(connection_url)
-            session.merge(orm_mapper(data))
-    
+        try:
+            cached_obj = list(session.query(orm_def).filter_by(filename=manifest.filename))
+            if not cached_obj or (len(cached_obj) > 0 and cached_obj[0].md5hash == manifest.md5hash):
+                # needs update
+                data = self._connection.GET(connection_url)
+                session.merge(orm_mapper(data))
+            session.commit()
+        except:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
 class OdkTableManifestCache(OdkManifestCache):
     def __init__(self,session: "sqlalchemy.orm.session.Session", storage: "SqlLocalStorage", connection: OdkxConnection):
@@ -106,7 +118,6 @@ class OdkTableManifestCache(OdkManifestCache):
                     raise ValueError(f"manifest files must belong to {tableId}")
                 super()._cache_object(manifest_file, self.TableProperties, self._properties_mapper(manifest_file, tableId),
                  "tables/" + tableId + "/properties/2", self.session)
-                
 
     def getCachedFormDef(self, tableId:str, formId:str) -> Any:
 

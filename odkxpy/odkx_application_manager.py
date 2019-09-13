@@ -59,7 +59,7 @@ class OdkxAppManager(object):
             print(f"Putting one file : {self.path}")
             localFiles = [self.path]
         elif (mode == "table") or (mode == "table_html_js"):
-            print("Putting table files : {self.tableId}")
+            print(f"Putting table files : {self.tableId}")
             localFiles = self._getListOfFiles(self.pathTableFiles)
         else:
             raise Exception("Unrecognized mode")
