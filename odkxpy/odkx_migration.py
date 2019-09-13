@@ -56,7 +56,7 @@ class migrator(object):
         self.local_storage = local_storage
         self.schema = self.local_storage.schema
         self.appRoot = appRoot
-        self.pathDef = self.appRoot + "/" + pathDef if pathDef is not None else self.appRoot + "/app/config/tables/" + self.tableId + "/definition.csv"
+        self.pathDef = self.appRoot + "/" + pathDef if pathDef is not None else self.appRoot + "/app/config/tables/" + self.newTableId + "/definition.csv"
         self.pathMapping = self.appRoot + "/" + pathMapping
 
     def _getNewTableDefinition(self) -> OdkxServerTableDefinition:
@@ -158,7 +158,7 @@ class migrator(object):
             raise Exception("The tableId of the table defined in the new table definition is already used on the server.")
         self.meta.createTable(newTableDef._asdict(True))
 
-        AppManager = OdkxAppManager(self.tableId, self.meta, self.appRoot)
+        AppManager = OdkxAppManager(newTableDef.tableId, self.meta, self.appRoot)
         AppManager.putFiles("table")
 
     def _checkLastHistoryNb(self):
