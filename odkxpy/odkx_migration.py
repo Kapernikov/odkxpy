@@ -147,17 +147,16 @@ class migrator(object):
         oldTableDef = self.table.getTableDefinition()
         return self._compareTableDef(oldTableDef, newTableDef)
 
-    def createRemoteTable(self, newTableDef, force=False):
+    def createRemoteTable(self, force=False):
         """
         Create a new remote table if the table definition is not existing.
         The table loaded in the migrator is updated.
         The files associated to the table are also updated.
         """
+        newTableDef = self._getNewTableDefinition()
         if newTableDef.tableId in [x.tableId for x in self.meta.getTables()]:
             raise Exception("The tableId of the table defined in the new table definition is already used on the server.")
         self.meta.createTable(newTableDef._asdict(True))
-        # We update the info on the current loaded table in the migrator
-        self.table = self.meta.getTable(newTableDef.tableId)
 
         AppManager = OdkxAppManager(self.tableId, self.meta, self.appRoot)
         AppManager.putFiles("table")
@@ -212,7 +211,9 @@ class migrator(object):
         else:
             historyTable = None
 
-        self.createRemoteTable(newTableDef, force)
+        # We update the info on the current loaded table in the migrator
+        self.table = self.meta.getTable(newTableDef.tableId)
+
         self.local_table.uploadHistory(self.table, historyTable=historyTable, mapping=mapping)
 
         # Working with the new local table

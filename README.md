@@ -89,6 +89,9 @@ Migrator = migrator(tableId, newTableId, meta, local_storage, odkx_application_p
 # Get a report on the incompatibilities before the migration
 Migrator.migrateReport()
 
+# Create the new table
+Migrator.createRemoteTable()
+
 Migrator.migrate()
 ```
 
