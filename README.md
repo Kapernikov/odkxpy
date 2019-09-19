@@ -7,7 +7,7 @@ Python API for accessing ODK-X. Support local sync to a SQL database
 * only supports PostgreSQL for now (makes use of queries using UPDATE...FROM syntax)
   need to fix this by switching to sqlalchemy core
 
-* Managment of full local history is only possible with a [patched odkx server](#patched-odkx-server-with-PR-31).
+* Managment of full local history is only possible with a [patched odkx server](#patched-odkx-server-with-pr-31).
 
 ## Getting data from the server (using REST)
 
@@ -78,7 +78,7 @@ first_table_local.uploadHistory(first_table, an_history_table, a_mapping_dict):
 
 If you want to migrate a table from one namespace to another, you can use the migrator class.
 It will involve the `uploadHistory` function as migration keep the history of the old table.
-Note that the attachments are also kept and that the migration is only possible if you have a [patched odkx server](#patched-odkx-server-with-PR-31).
+Note that the attachments are also kept and that the migration is only possible if you have a [patched odkx server](#patched-odkx-server-with-pr-31).
 
 ```python
 # odkx_application_path: path to the application root directory
@@ -112,7 +112,7 @@ AppManager.putFiles(mode)
 ## Patched odkx server with PR 31
 
 By default, the /diff API only returns the latest version of a row in one fetch block. 
-An option has been added in the "" API to get all versions of rows.
+An option has been added in the API to get all versions of rows.
 When the full history is needed, now one can pass getFullLog=true to get all changes.
 
 More information can be found on [github](https://github.com/opendatakit/sync-endpoint/pull/31)
