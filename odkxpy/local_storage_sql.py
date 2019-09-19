@@ -99,7 +99,7 @@ class SqlLocalStorage(object):
             tabledef, log_table=True, table_name_instead=server_table.tableId + '_staging')
         self._createStatusTable()
 
-    def intializeExternalSource(self, source_prefix: str, server_table: OdkxServerTable, relevant_columns: Optional[List[str]] = None):
+    def initializeExternalSource(self, source_prefix: str, server_table: OdkxServerTable, relevant_columns: Optional[List[str]] = None):
         """
         initialize a staging table and an external modifications table for a certain external source.
         the staging table will be called [tableId]_[sourceprefix]_staging, and the external source table will be called [tableId]_[sourceprefix]
